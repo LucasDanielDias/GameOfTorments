@@ -5,6 +5,7 @@ import {
   applyAction,
   beats,
   compareFronts,
+  duelStanding,
   determinize,
   newGame,
   openColumns,
@@ -38,11 +39,24 @@ function setColumn(s: GameState, col: number, f0: string, f1: string, b0?: strin
   s.players[1].back[col] = b1 ? { card: mk(s, b1), revealed: false } : null;
 }
 
-/** Joga um duelo sem virar nada e sem trocar. */
+/** Vira a backline e, se aparecer a troca com a frontline, mantém a frontline. */
+function flipKeep(s: GameState) {
+  applyAction(s, { type: 'flip', flip: true });
+  if (s.phase === 'exchange') applyAction(s, { type: 'exchange', exchange: false });
+}
+
+/** Apura o duelo pendente (a interface faz isso depois de mostrar os efeitos). */
+function settle(s: GameState) {
+  if (s.phase === 'resolve') applyAction(s, { type: 'resolve' });
+}
+
+/** Joga um duelo sem virar nada e sem trocar; avança a rodada se ela acabar. */
 function quickDuel(s: GameState) {
   if (s.phase === 'choose') applyAction(s, { type: 'choose', col: openColumns(s)[0] });
   while (s.phase === 'flip') applyAction(s, { type: 'flip', flip: false });
+  settle(s);
   while (s.phase === 'swap') applyAction(s, { type: 'done' });
+  if (s.phase === 'roundOver') applyAction(s, { type: 'next' });
 }
 
 describe('princípios', () => {
@@ -103,8 +117,10 @@ describe('duelo', () => {
     applyAction(s, { type: 'choose', col: 0 });
     expect(s.phase).toBe('flip');
     expect(s.actor).toBe(1);
-    applyAction(s, { type: 'flip', flip: true });
+    flipKeep(s);
     applyAction(s, { type: 'flip', flip: false });
+    expect(s.phase).toBe('resolve'); // a interface mostra tudo antes de apurar
+    settle(s);
     expect(s.columns[0]).toEqual({ resolved: true, winner: 0 });
     expect(s.players[0].duelWins).toBe(1);
   });
@@ -114,9 +130,10 @@ describe('duelo', () => {
     setColumn(s, 1, 'i-escudeiro', 'i-batedora', 'q-intendente', 'i-arqueiro'); // 2 × 5; DEF 7 e 4
     applyAction(s, { type: 'choose', col: 1 });
     expect(s.actor).toBe(0);
-    applyAction(s, { type: 'flip', flip: true }); // 9 × 5
+    flipKeep(s); // 9 × 5
     expect(s.actor).toBe(1);
-    applyAction(s, { type: 'flip', flip: true }); // 9 × 9 → d6
+    flipKeep(s); // 9 × 9 → d6
+    settle(s);
     expect(s.columns[1].resolved).toBe(true);
   });
 
@@ -125,7 +142,7 @@ describe('duelo', () => {
     setColumn(s, 2, 'i-escudeiro', 'i-batedora', 't-mapa-confuso', 'i-arqueiro');
     const top = s.players[0].charDeck[s.players[0].charDeck.length - 1];
     applyAction(s, { type: 'choose', col: 2 });
-    applyAction(s, { type: 'flip', flip: true });
+    flipKeep(s);
     expect(s.players[0].front[2]!.card.uid).toBe(top.uid);
     expect(s.players[0].front[2]!.revealed).toBe(true);
   });
@@ -136,11 +153,12 @@ describe('duelo', () => {
     const stolen = s.players[1].back[3]!.card.uid;
     applyAction(s, { type: 'choose', col: 3 });
     expect(s.actor).toBe(1);
-    applyAction(s, { type: 'flip', flip: true }); // rival vira Intendente: 2 + 7 = 9 × 5
+    flipKeep(s); // rival vira Intendente: 2 + 7 = 9 × 5
     expect(s.actor).toBe(0);
-    applyAction(s, { type: 'flip', flip: true }); // Vara rouba o Intendente
+    flipKeep(s); // Vara rouba o Intendente
     expect(s.players[1].back[3]).toBeNull();
     expect(s.players[0].hand.map((c) => c.uid)).toContain(stolen);
+    settle(s);
     expect(s.columns[3]).toEqual({ resolved: true, winner: 0 });
   });
 });
@@ -161,25 +179,88 @@ describe('rodada', () => {
     for (let col = 0; col < 5; col++) setColumn(s, col, 'e-sapador', 'q-intendente', 'r-herdeiro', 'r-regente');
     const hiddenRoyal = s.players[1].back[4]!.card.uid;
     applyAction(s, { type: 'choose', col: 0 });
-    applyAction(s, { type: 'flip', flip: true }); // bot vira Realeza da backline do campo 1
+    flipKeep(s); // bot vira Realeza da backline do campo 1
     applyAction(s, { type: 'flip', flip: false });
+    settle(s);
     for (let guard = 0; s.round === 1 && guard < 50; guard++) quickDuel(s);
     expect(s.players[1].exile.length).toBe(1);
     expect(s.players[1].graveChars.map((c) => c.uid)).toContain(hiddenRoyal);
   });
 
-  it('só backlines ocultas trocam de lugar', () => {
+  it('só backlines ocultas de campos que ainda não lutaram trocam de lugar', () => {
     const s = placed(14);
     setColumn(s, 0, 'i-escudeiro', 'i-batedora', 'q-intendente', 'i-arqueiro');
     applyAction(s, { type: 'choose', col: 0 });
-    applyAction(s, { type: 'flip', flip: true });
-    if (s.phase === 'flip') applyAction(s, { type: 'flip', flip: false });
+    applyAction(s, { type: 'flip', flip: false });
+    settle(s);
     expect(s.phase).toBe('swap');
     const pid = s.actor;
-    if (s.players[pid].back[0]!.revealed) expect(() => applyAction(s, { type: 'swap', a: 0, b: 1 })).toThrow();
+    // campo 1 já lutou: não entra nem sai carta da backline dele
+    expect(() => applyAction(s, { type: 'swap', a: 0, b: 1 })).toThrow();
     const card2 = s.players[pid].back[2]!.card.uid;
     applyAction(s, { type: 'swap', a: 2, b: 4 });
     expect(s.players[pid].back[4]!.card.uid).toBe(card2);
+  });
+
+  it('a rodada decidida espera "next" com a mesa à mostra', () => {
+    const s = placed(16);
+    for (let guard = 0; s.phase !== 'roundOver' && guard < 50; guard++) {
+      if (s.phase === 'choose') applyAction(s, { type: 'choose', col: openColumns(s)[0] });
+      while (s.phase === 'flip') applyAction(s, { type: 'flip', flip: false });
+      settle(s);
+      while (s.phase === 'swap') applyAction(s, { type: 'done' });
+    }
+    expect(s.phase).toBe('roundOver');
+    expect(s.players[0].front.every((x) => x !== null)).toBe(true);
+    applyAction(s, { type: 'next' });
+    expect(s.round).toBe(2);
+  });
+});
+
+describe('truques novos', () => {
+  function duelWith(seed: number, f0: string, f1: string, b0: string, b1?: string) {
+    const s = placed(seed);
+    setColumn(s, 2, f0, f1, b0, b1);
+    applyAction(s, { type: 'choose', col: 2 });
+    return s;
+  }
+
+  it('Contra-ordem inverte a vantagem de princípio', () => {
+    const s = duelWith(30, 'q-capitao', 'e-sapador', 't-contra-ordem'); // Engenharia > QG
+    flipKeep(s);
+    settle(s);
+    expect(s.columns[2].winner).toBe(0);
+  });
+
+  it('Coroa Falsa faz a frontline contar como Realeza', () => {
+    const s = duelWith(31, 'i-escudeiro', 'q-capitao', 't-coroa-falsa'); // QG > Infantaria
+    flipKeep(s);
+    settle(s);
+    expect(s.columns[2].winner).toBe(0);
+  });
+
+  it('Escudo de Torre soma 4 e Lança de Cerco soma 3', () => {
+    const s = duelWith(32, 'i-escudeiro', 'i-lanceiro', 't-escudo-de-torre', 't-lanca-de-cerco'); // 2 × 4
+    flipKeep(s); // 6 × 4
+    flipKeep(s); // 6 × 7
+    settle(s);
+    expect(s.columns[2].winner).toBe(1);
+  });
+
+  it('Sabotagem manda a backline inimiga ao cemitério', () => {
+    const s = duelWith(33, 'i-escudeiro', 'i-lanceiro', 't-sabotagem', 'q-intendente');
+    const target = s.players[1].back[2]!.card.uid;
+    flipKeep(s);
+    expect(s.players[1].back[2]).toBeNull();
+    expect(s.players[1].graveChars.map((c) => c.uid)).toContain(target);
+  });
+
+  it('Tambor de Guerra impede o rival de virar', () => {
+    const s = duelWith(34, 'i-escudeiro', 'i-lanceiro', 't-tambor-de-guerra', 'q-intendente'); // 2+2 × 4
+    flipKeep(s);
+    expect(s.phase).toBe('resolve');
+    settle(s);
+    expect(s.players[1].back[2]!.revealed).toBe(false);
   });
 });
 
@@ -212,11 +293,122 @@ describe('regras de distribuição e compra', () => {
   it('compra 1 truque por duelo perdido na rodada anterior', () => {
     const s = placed(22);
     const before = s.players.map((p) => p.trickHand.length); // ninguém usou truques na rodada 1
-    for (let guard = 0; s.round === 1 && guard < 50; guard++) quickDuel(s);
+    const fromAbilities = [0, 0];
+    const play = (a: Action) => {
+      for (const ev of applyAction(s, a)) if (ev.kind === 'ability' && ev.drawn && isTrickDraw(ev.text)) fromAbilities[ev.player] += ev.drawn;
+    };
+    for (let guard = 0; s.round === 1 && guard < 80; guard++) {
+      if (s.phase === 'choose') play({ type: 'choose', col: openColumns(s)[0] });
+      else if (s.phase === 'flip') play({ type: 'flip', flip: false });
+      else if (s.phase === 'resolve') play({ type: 'resolve' });
+      else if (s.phase === 'swap') play({ type: 'done' });
+      else if (s.phase === 'roundOver') play({ type: 'next' });
+    }
     for (const pid of [0, 1] as PlayerId[]) {
       const lost = s.players[pid].lastRoundLosses;
       if (s.lastRoundWinner !== pid) expect(lost).toBe(3); // quem perdeu a rodada perdeu 3 duelos
-      expect(s.players[pid].trickHand.length).toBe(before[pid] + lost);
+      expect(s.players[pid].trickHand.length).toBe(before[pid] + lost + fromAbilities[pid]);
     }
+  });
+
+});
+
+describe('troca backline ↔ frontline', () => {
+  it('personagem virado pode ir para a frente se o princípio dele não vencer o do rival', () => {
+    const s = placed(40);
+    // eu: Escudeiro (Inf, ATK 2) na frente, Berserker (Inf, ATK 6) atrás; rival: Lanceiro (Inf, ATK 4)
+    setColumn(s, 1, 'i-escudeiro', 'i-lanceiro', 'i-berserker');
+    applyAction(s, { type: 'choose', col: 1 });
+    expect(s.actor).toBe(0);
+    applyAction(s, { type: 'flip', flip: true });
+    expect(s.phase).toBe('exchange');
+    applyAction(s, { type: 'exchange', exchange: true });
+    expect(getDefName(s.players[0].front[1]!.card)).toBe('i-berserker');
+    expect(getDefName(s.players[0].back[1]!.card)).toBe('i-escudeiro');
+    settle(s);
+    // Berserker ATK 6 + DEF do Escudeiro 6 = 12 × 4
+    expect(s.columns[1].winner).toBe(0);
+  });
+
+  it('não pode trocar se o princípio da backline vencer a frontline rival', () => {
+    const s = placed(41);
+    // rival: Escudeiro (Infantaria); minha backline: Capitão (QG) vence Infantaria → sem troca
+    setColumn(s, 2, 'i-batedora', 'i-berserker', 'q-capitao');
+    applyAction(s, { type: 'choose', col: 2 });
+    applyAction(s, { type: 'flip', flip: true });
+    expect(s.phase).not.toBe('exchange');
+  });
+});
+
+function getDefName(c: CardInst) {
+  return c.defId;
+}
+
+function isTrickDraw(text: string) {
+  return text.includes('truque');
+}
+
+describe('palavras-chave', () => {
+  const duel = (seed: number, f0: string, f1: string, b0?: string, b1?: string, col = 0) => {
+    const s = placed(seed);
+    setColumn(s, col, f0, f1, b0, b1);
+    return s;
+  };
+
+  it('Revelação: Arauto ganha +2 de ATK ao ser revelado', () => {
+    const s = duel(50, 'q-arauto', 'q-comandante'); // QG 3+2 × QG 4
+    applyAction(s, { type: 'choose', col: 0 });
+    settle(s);
+    expect(s.columns[0].winner).toBe(0);
+  });
+
+  it('Vigilante: Torre de Vigia virada na backline soma +3 além da DEF', () => {
+    const s = duel(51, 'e-artifice', 'e-balista', 'e-torre-vigia'); // 2 × 5; virando: 2 + 5 + 3 = 10
+    applyAction(s, { type: 'choose', col: 0 });
+    flipKeep(s);
+    settle(s);
+    expect(s.columns[0].winner).toBe(0);
+  });
+
+  it('Medroso: foge para a mão quando o rival tem vantagem e o topo do deck entra', () => {
+    const s = duel(52, 'q-tenente', 'e-sapador'); // Engenharia vence QG
+    const top = s.players[0].charDeck[s.players[0].charDeck.length - 1];
+    const ev = applyAction(s, { type: 'choose', col: 0 });
+    expect(ev.some((e) => e.kind === 'ability' && e.keyword === 'medroso')).toBe(true);
+    expect(s.players[0].front[0]!.card.uid).toBe(top.uid);
+    expect(s.players[0].hand.some((c) => c.defId === 'q-tenente')).toBe(true);
+  });
+
+  it('Fraqueza: Recruta Teimoso anula a vantagem de princípio e compara ATK', () => {
+    const s = duel(53, 'i-recruta', 'q-mensageiro'); // QG vence Infantaria; 3 × 4 no ATK
+    applyAction(s, { type: 'choose', col: 0 });
+    const st = duelStanding(s, 0);
+    expect(st.byPrinciple).toBe(false);
+    expect(st.totals).toEqual([3, 4]);
+  });
+
+  it('Prêmio de Consolação: Desertor que perde volta para a mão no fim da rodada', () => {
+    const s = duel(54, 'i-desertor', 'q-capitao'); // QG vence Infantaria
+    const uid = s.players[0].front[0]!.card.uid;
+    applyAction(s, { type: 'choose', col: 0 });
+    while (s.phase === 'flip') applyAction(s, { type: 'flip', flip: false });
+    settle(s);
+    expect(s.players[0].keepers).toContain(uid);
+    for (let guard = 0; s.round === 1 && guard < 80; guard++) quickDuel(s);
+    expect(s.players[0].graveChars.some((c) => c.uid === uid)).toBe(false);
+  });
+
+  it('Nostálgico: Mineiro ganha +1 de ATK a cada 3 cartas no cemitério', () => {
+    const s = duel(55, 'e-mineiro', 'e-cerco'); // 2 × 4
+    for (let i = 0; i < 9; i++) s.players[0].graveChars.push({ uid: 9000 + i, defId: 'e-sapador' }); // +3
+    applyAction(s, { type: 'choose', col: 0 });
+    expect(duelStanding(s, 0).totals[0]).toBe(5);
+  });
+
+  it('Bastardo: Herdeiro ganha +1 de ATK por carta no exílio', () => {
+    const s = duel(56, 'r-herdeiro', 'r-princesa'); // Realeza × Realeza: 4 × 5
+    s.players[1].exile.push({ uid: 9100, defId: 'r-regente' }, { uid: 9101, defId: 'r-regente' });
+    applyAction(s, { type: 'choose', col: 0 });
+    expect(duelStanding(s, 0).totals[0]).toBe(6);
   });
 });
