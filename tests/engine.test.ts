@@ -5,6 +5,7 @@ import {
   applyAction,
   beats,
   compareFronts,
+  duelStanding,
   determinize,
   newGame,
   openColumns,
@@ -292,13 +293,24 @@ describe('regras de distribuição e compra', () => {
   it('compra 1 truque por duelo perdido na rodada anterior', () => {
     const s = placed(22);
     const before = s.players.map((p) => p.trickHand.length); // ninguém usou truques na rodada 1
-    for (let guard = 0; s.round === 1 && guard < 50; guard++) quickDuel(s);
+    const fromAbilities = [0, 0];
+    const play = (a: Action) => {
+      for (const ev of applyAction(s, a)) if (ev.kind === 'ability' && ev.drawn && isTrickDraw(ev.text)) fromAbilities[ev.player] += ev.drawn;
+    };
+    for (let guard = 0; s.round === 1 && guard < 80; guard++) {
+      if (s.phase === 'choose') play({ type: 'choose', col: openColumns(s)[0] });
+      else if (s.phase === 'flip') play({ type: 'flip', flip: false });
+      else if (s.phase === 'resolve') play({ type: 'resolve' });
+      else if (s.phase === 'swap') play({ type: 'done' });
+      else if (s.phase === 'roundOver') play({ type: 'next' });
+    }
     for (const pid of [0, 1] as PlayerId[]) {
       const lost = s.players[pid].lastRoundLosses;
       if (s.lastRoundWinner !== pid) expect(lost).toBe(3); // quem perdeu a rodada perdeu 3 duelos
-      expect(s.players[pid].trickHand.length).toBe(before[pid] + lost);
+      expect(s.players[pid].trickHand.length).toBe(before[pid] + lost + fromAbilities[pid]);
     }
   });
+
 });
 
 describe('troca backline ↔ frontline', () => {
@@ -331,3 +343,72 @@ describe('troca backline ↔ frontline', () => {
 function getDefName(c: CardInst) {
   return c.defId;
 }
+
+function isTrickDraw(text: string) {
+  return text.includes('truque');
+}
+
+describe('palavras-chave', () => {
+  const duel = (seed: number, f0: string, f1: string, b0?: string, b1?: string, col = 0) => {
+    const s = placed(seed);
+    setColumn(s, col, f0, f1, b0, b1);
+    return s;
+  };
+
+  it('Revelação: Arauto ganha +2 de ATK ao ser revelado', () => {
+    const s = duel(50, 'q-arauto', 'q-comandante'); // QG 3+2 × QG 4
+    applyAction(s, { type: 'choose', col: 0 });
+    settle(s);
+    expect(s.columns[0].winner).toBe(0);
+  });
+
+  it('Vigilante: Torre de Vigia virada na backline soma +3 além da DEF', () => {
+    const s = duel(51, 'e-artifice', 'e-balista', 'e-torre-vigia'); // 2 × 5; virando: 2 + 5 + 3 = 10
+    applyAction(s, { type: 'choose', col: 0 });
+    flipKeep(s);
+    settle(s);
+    expect(s.columns[0].winner).toBe(0);
+  });
+
+  it('Medroso: foge para a mão quando o rival tem vantagem e o topo do deck entra', () => {
+    const s = duel(52, 'q-tenente', 'e-sapador'); // Engenharia vence QG
+    const top = s.players[0].charDeck[s.players[0].charDeck.length - 1];
+    const ev = applyAction(s, { type: 'choose', col: 0 });
+    expect(ev.some((e) => e.kind === 'ability' && e.keyword === 'medroso')).toBe(true);
+    expect(s.players[0].front[0]!.card.uid).toBe(top.uid);
+    expect(s.players[0].hand.some((c) => c.defId === 'q-tenente')).toBe(true);
+  });
+
+  it('Fraqueza: Recruta Teimoso anula a vantagem de princípio e compara ATK', () => {
+    const s = duel(53, 'i-recruta', 'q-mensageiro'); // QG vence Infantaria; 3 × 4 no ATK
+    applyAction(s, { type: 'choose', col: 0 });
+    const st = duelStanding(s, 0);
+    expect(st.byPrinciple).toBe(false);
+    expect(st.totals).toEqual([3, 4]);
+  });
+
+  it('Prêmio de Consolação: Desertor que perde volta para a mão no fim da rodada', () => {
+    const s = duel(54, 'i-desertor', 'q-capitao'); // QG vence Infantaria
+    const uid = s.players[0].front[0]!.card.uid;
+    applyAction(s, { type: 'choose', col: 0 });
+    while (s.phase === 'flip') applyAction(s, { type: 'flip', flip: false });
+    settle(s);
+    expect(s.players[0].keepers).toContain(uid);
+    for (let guard = 0; s.round === 1 && guard < 80; guard++) quickDuel(s);
+    expect(s.players[0].graveChars.some((c) => c.uid === uid)).toBe(false);
+  });
+
+  it('Nostálgico: Mineiro ganha +1 de ATK a cada 3 cartas no cemitério', () => {
+    const s = duel(55, 'e-mineiro', 'e-cerco'); // 2 × 4
+    for (let i = 0; i < 9; i++) s.players[0].graveChars.push({ uid: 9000 + i, defId: 'e-sapador' }); // +3
+    applyAction(s, { type: 'choose', col: 0 });
+    expect(duelStanding(s, 0).totals[0]).toBe(5);
+  });
+
+  it('Bastardo: Herdeiro ganha +1 de ATK por carta no exílio', () => {
+    const s = duel(56, 'r-herdeiro', 'r-princesa'); // Realeza × Realeza: 4 × 5
+    s.players[1].exile.push({ uid: 9100, defId: 'r-regente' }, { uid: 9101, defId: 'r-regente' });
+    applyAction(s, { type: 'choose', col: 0 });
+    expect(duelStanding(s, 0).totals[0]).toBe(6);
+  });
+});

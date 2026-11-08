@@ -1075,3 +1075,33 @@ button:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--ink-3)
 .drag-src { opacity: 0.3; filter: grayscale(0.4); }
 .slot.can-drop { outline: 2px dashed var(--move); outline-offset: 2px; }
 .slot.drop-ok { outline: 3px solid var(--gold); outline-offset: 3px; background: rgba(197, 169, 115, 0.35); }
+
+/* ═══ Palavras-chave nas cartas ═══════════════════════════════════════ */
+.card .kw-line {
+  flex: none;
+  margin: 0 0.4em;
+  padding: 0.15em 0.3em;
+  font-size: 0.56em;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-align: center;
+  color: var(--paper);
+  background: var(--pc-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.card .abil { display: none; }
+.card.lg .abil { display: block; flex: none; padding: 0.3em 0.9em 0; font-size: 0.6em; line-height: 1.4; color: var(--ink); text-align: center; }
+.card.lg .abil p { margin: 0 0 0.25em; }
+.card.lg .abil b { color: var(--pc-ink); }
+.card.lg .kw-line { display: none; }
+.card.lg .text { font-size: 0.56em; }
+.card.lg .art { flex-basis: 40%; }
+.tiny .side .card .kw-line { display: none; }
+.peek .details small, .inspector .details small { display: block; margin-top: 4px; color: var(--ink-3); }
+.card.lg:has(.abil) .art { flex-basis: 33%; }
+.card.lg:has(.abil) .text { font-size: 0.52em; }
+/* mão nunca alarga a página: quebra em linhas quando não cabe */
+.hand-cards { flex-wrap: wrap; justify-content: center; row-gap: 10px; max-width: 100%; }

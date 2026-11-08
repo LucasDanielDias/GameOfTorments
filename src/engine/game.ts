@@ -6,7 +6,7 @@ import {
   RULES,
   type Principle,
 } from '../config';
-import { DECKS, TRICK_DECK, getDef, isTrick, type DeckKey } from './cards';
+import { DECKS, TRICK_DECK, abilityText, getDef, isTrick, type Ability, type DeckKey, type Keyword } from './cards';
 import { rand, rollD6, shuffle } from './rng';
 
 /*
@@ -68,6 +68,10 @@ export interface PlayerState {
   graveTricks: CardInst[];
   exile: CardInst[];
   swapsThisTurn: number;
+  /** bônus por princípio válidos até o fim da rodada (ex.: Sentinela da Muralha) */
+  buffs: { principle: Principle; atk: number; def: number }[];
+  /** cartas que voltam para a mão no fim da rodada (Prêmio de Consolação) */
+  keepers: number[];
 }
 
 /**
@@ -104,10 +108,14 @@ export interface DuelMods {
   royal: [boolean, boolean];
   /** Tambor de Guerra: o lado marcado não pode mais virar a backline */
   noFlip: [boolean, boolean];
+  /** neste duelo ninguém tem vantagem de princípio */
+  noPrinciple: boolean;
+  /** Medroso: quem já fugiu neste duelo */
+  fled: [boolean, boolean];
 }
 
 export function emptyMods(): DuelMods {
-  return { atk: [0, 0], def: [0, 0], invert: false, royal: [false, false], noFlip: [false, false] };
+  return { atk: [0, 0], def: [0, 0], invert: false, royal: [false, false], noFlip: [false, false], noPrinciple: false, fled: [false, false] };
 }
 
 export interface GameState {
@@ -155,6 +163,7 @@ export type GameEvent =
   | { kind: 'choose'; player: PlayerId; col: number }
   | { kind: 'reveal'; col: number; uids: [number, number]; leader: PlayerId; byPrinciple: boolean }
   | { kind: 'flip'; player: PlayerId; col: number; flipped: boolean; uid?: number }
+  | { kind: 'ability'; player: PlayerId; uid: number; keyword: Keyword; text: string; passive?: boolean; newUid?: number; drawn?: number }
   | { kind: 'exchange'; player: PlayerId; col: number; exchanged: boolean; newFrontUid?: number; newBackUid?: number }
   | { kind: 'trigger'; player: PlayerId; col: number; defId: string; result: 'trocou' | 'roubou' | 'falhou' | 'sabotou' | 'bonus'; oldUid?: number; newUid?: number; stolenUid?: number; revealedUid?: number; destroyedUid?: number; text?: string }
   | { kind: 'result'; col: number; winner: PlayerId; totals: [number, number]; reason: DuelReason; dice: [number, number][]; duelWins: [number, number] }
@@ -257,6 +266,8 @@ export function newGame(opts: NewGameOptions): GameState {
       graveTricks: [],
       exile: [],
       swapsThisTurn: 0,
+      buffs: [],
+      keepers: [],
     };
   }
   return s;
@@ -280,6 +291,8 @@ function clonePlayer(p: PlayerState): PlayerState {
     graveChars: p.graveChars.slice(),
     graveTricks: p.graveTricks.slice(),
     exile: p.exile.slice(),
+    buffs: p.buffs.slice(),
+    keepers: p.keepers.slice(),
   };
 }
 
@@ -299,6 +312,8 @@ export function cloneState(s: GameState): GameState {
             invert: s.clash.mods.invert,
             royal: [...s.clash.mods.royal] as [boolean, boolean],
             noFlip: [...s.clash.mods.noFlip] as [boolean, boolean],
+            noPrinciple: s.clash.mods.noPrinciple,
+            fled: [...s.clash.mods.fled] as [boolean, boolean],
           },
         }
       : null,
@@ -354,8 +369,8 @@ export interface FrontCompare {
 export function compareFronts(a: CardInst, b: CardInst, mods: DuelMods = emptyMods()): FrontCompare {
   const pa: Principle = mods.royal[0] ? 'realeza' : principleOf(a);
   const pb: Principle = mods.royal[1] ? 'realeza' : principleOf(b);
-  let aAdv = beats(pa, pb);
-  let bAdv = beats(pb, pa);
+  let aAdv = !mods.noPrinciple && beats(pa, pb);
+  let bAdv = !mods.noPrinciple && beats(pb, pa);
   if (mods.invert) [aAdv, bAdv] = [bAdv, aAdv];
   const va = getDef(a.defId).atk + mods.atk[0] + (PRINCIPLE_MODE === 'bonus' && aAdv ? PRINCIPLE_BONUS : 0);
   const vb = getDef(b.defId).atk + mods.atk[1] + (PRINCIPLE_MODE === 'bonus' && bAdv ? PRINCIPLE_BONUS : 0);
@@ -380,13 +395,72 @@ export interface DuelStanding {
   totals: [number, number];
 }
 
-/** Situação atual do duelo no campo `col` (frontlines, backlines viradas e efeitos). */
+export function abilitiesOf(c: CardInst): Ability[] {
+  return isTrick(c.defId) ? [] : getDef(c.defId).abilities ?? [];
+}
+
+function exileCount(s: GameState) {
+  return s.players[0].exile.length + s.players[1].exile.length;
+}
+
+/**
+ * Efeitos passivos de um lado no duelo: Nostálgico, Bastardo, Fraqueza
+ * e bônus de rodada. ATK conta para a frontline; DEF soma no total.
+ */
+function passiveExtras(s: GameState, pid: PlayerId, col: number, enemyHasAdvantage: boolean) {
+  const p = s.players[pid];
+  const front = p.front[col]!.card;
+  const back = p.back[col];
+  const backIn = !!(s.clash && s.clash.col === col && s.clash.flipped[pid] && back && back.revealed && !isTrick(back.card.defId));
+  let atk = 0;
+  let def = 0;
+  let noPrinciple = false;
+  const roles: [CardInst, 'front' | 'back'][] = [[front, 'front']];
+  if (backIn) roles.push([back!.card, 'back']);
+  for (const [card, role] of roles) {
+    for (const ab of abilitiesOf(card)) {
+      for (const e of ab.effects) {
+        if (e.kind === 'scale' && (ab.keyword === 'nostalgico' || ab.keyword === 'bastardo')) {
+          const count = e.source === 'grave' ? p.graveChars.length : exileCount(s);
+          const n = Math.min(e.max, Math.floor(count / e.per));
+          if (e.stat === 'atk' && role === 'front') atk += n;
+          if (e.stat === 'def') def += n;
+        }
+        if (ab.keyword === 'fraqueza' && role === 'front' && enemyHasAdvantage) {
+          if (e.kind === 'atk') atk += e.n;
+          if (e.kind === 'def') def += e.n;
+          if (e.kind === 'noPrinciple') noPrinciple = true;
+        }
+      }
+    }
+  }
+  for (const b of p.buffs) {
+    if (principleOf(front) === b.principle) atk += b.atk;
+    if (backIn && principleOf(back!.card) === b.principle) def += b.def;
+  }
+  return { atk, def, noPrinciple };
+}
+
+/** Fraqueza está ativa para `pid` neste campo? (o rival tem vantagem de princípio) */
+export function weaknessActive(s: GameState, pid: PlayerId, col: number): boolean {
+  const mods = s.clash && s.clash.col === col ? s.clash.mods : emptyMods();
+  const base = compareFronts(s.players[0].front[col]!.card, s.players[1].front[col]!.card, mods);
+  return base.byPrinciple && base.leader === other(pid);
+}
+
+/** Situação atual do duelo no campo `col` (frontlines, backlines viradas, efeitos e habilidades). */
 export function duelStanding(s: GameState, col: number): DuelStanding {
   const f0 = s.players[0].front[col]!.card;
   const f1 = s.players[1].front[col]!.card;
   const mods = s.clash && s.clash.col === col ? s.clash.mods : emptyMods();
-  const cmp = compareFronts(f0, f1, mods);
-  const totals: [number, number] = [cmp.values[0] + backBonus(s, 0, col), cmp.values[1] + backBonus(s, 1, col)];
+  const base = compareFronts(f0, f1, mods);
+  const x0 = passiveExtras(s, 0, col, base.byPrinciple && base.leader === 1);
+  const x1 = passiveExtras(s, 1, col, base.byPrinciple && base.leader === 0);
+  const cmp = (x0.noPrinciple || x1.noPrinciple) && !mods.noPrinciple ? compareFronts(f0, f1, { ...mods, noPrinciple: true }) : base;
+  const totals: [number, number] = [
+    cmp.values[0] + x0.atk + x0.def + backBonus(s, 0, col),
+    cmp.values[1] + x1.atk + x1.def + backBonus(s, 1, col),
+  ];
   if (cmp.byPrinciple) return { leader: cmp.leader, byPrinciple: true, totals };
   return { leader: totals[0] > totals[1] ? 0 : totals[1] > totals[0] ? 1 : null, byPrinciple: false, totals };
 }
@@ -483,10 +557,13 @@ function applyChoose(s: GameState, col: number, events: GameEvent[]) {
   const [p0, p1] = s.players;
   p0.front[col]!.revealed = true;
   p1.front[col]!.revealed = true;
-  const cmp = compareFronts(p0.front[col]!.card, p1.front[col]!.card);
-  const leader = cmp.leader ?? chooser; // frontlines empatadas: quem escolheu o campo fica à frente
-  events.push({ kind: 'reveal', col, uids: [p0.front[col]!.card.uid, p1.front[col]!.card.uid], leader, byPrinciple: cmp.byPrinciple });
-  s.clash = { col, chooser, leader, flipped: [false, false], exchanged: [false, false], stage: 'loser', mods: emptyMods() };
+  s.clash = { col, chooser, leader: chooser, flipped: [false, false], exchanged: [false, false], stage: 'loser', mods: emptyMods() };
+  const first = duelStanding(s, col);
+  events.push({ kind: 'reveal', col, uids: [p0.front[col]!.card.uid, p1.front[col]!.card.uid], leader: first.leader ?? chooser, byPrinciple: first.byPrinciple });
+  onFrontsRevealed(s, col, events);
+  const st = duelStanding(s, col);
+  const leader = st.leader ?? chooser; // empatados: quem escolheu o campo fica à frente
+  s.clash.leader = leader;
   const loser = other(leader);
   if (canFlip(s, loser)) {
     s.phase = 'flip';
@@ -499,6 +576,88 @@ export function canFlip(s: GameState, pid: PlayerId): boolean {
   if (s.clash.mods.noFlip[pid]) return false;
   const b = s.players[pid].back[s.clash.col];
   return !!b && !b.revealed;
+}
+
+/** Dispara as habilidades `keyword` de `card` (de `pid`) no duelo do campo `col`. */
+function fireAbilities(s: GameState, pid: PlayerId, card: CardInst, keyword: Keyword, col: number, events: GameEvent[]) {
+  const p = s.players[pid];
+  for (const ab of abilitiesOf(card)) {
+    if (ab.keyword !== keyword) continue;
+    const ev: Extract<GameEvent, { kind: 'ability' }> = { kind: 'ability', player: pid, uid: card.uid, keyword, text: abilityText(ab) };
+    let fled: CardInst | null = null;
+    for (const e of ab.effects) {
+      const m = s.clash?.mods;
+      switch (e.kind) {
+        case 'atk':
+          if (m) m.atk[pid] += e.n;
+          break;
+        case 'def':
+          if (m) m.def[pid] += e.n;
+          break;
+        case 'noPrinciple':
+          if (m) m.noPrinciple = true;
+          break;
+        case 'drawTrick': {
+          if (!p.trickDeck.length && p.graveTricks.length) p.trickDeck.push(...shuffle(s, p.graveTricks.splice(0)));
+          let n = 0;
+          for (let i = 0; i < e.n && p.trickDeck.length; i++, n++) p.trickHand.push(p.trickDeck.pop()!);
+          ev.drawn = (ev.drawn ?? 0) + n;
+          break;
+        }
+        case 'drawChar': {
+          let n = 0;
+          for (let i = 0; i < e.n && p.charDeck.length; i++, n++) p.hand.push(p.charDeck.pop()!);
+          ev.drawn = (ev.drawn ?? 0) + n;
+          break;
+        }
+        case 'teamBuff':
+          p.buffs.push({ principle: e.principle, atk: e.atk ?? 0, def: e.def ?? 0 });
+          break;
+        case 'toHand':
+          if (!p.keepers.includes(card.uid)) p.keepers.push(card.uid);
+          break;
+        case 'flee':
+          fled = flee(s, pid, col);
+          if (fled) ev.newUid = fled.uid;
+          break;
+        case 'scale':
+          break; // passivo, calculado em duelStanding
+      }
+    }
+    events.push(ev);
+    if (fled) fireAbilities(s, pid, fled, 'revelacao', col, events);
+  }
+}
+
+/** Medroso: a frontline volta para a mão e a carta do topo do deck entra revelada. */
+function flee(s: GameState, pid: PlayerId, col: number): CardInst | null {
+  const p = s.players[pid];
+  const m = s.clash?.mods;
+  if (!m || m.fled[pid]) return null;
+  if (!p.charDeck.length && p.graveChars.length) p.charDeck.push(...shuffle(s, p.graveChars.splice(0)));
+  if (!p.charDeck.length) return null;
+  m.fled[pid] = true;
+  const old = p.front[col]!.card;
+  const fresh = p.charDeck.pop()!;
+  p.hand.push(old);
+  p.front[col] = { card: fresh, revealed: true };
+  return fresh;
+}
+
+/** Revelação das duas frontlines: Revelação, depois Medroso e aviso de Fraqueza. */
+function onFrontsRevealed(s: GameState, col: number, events: GameEvent[]) {
+  const order: PlayerId[] = [s.clash!.chooser, other(s.clash!.chooser)];
+  for (const pid of order) fireAbilities(s, pid, s.players[pid].front[col]!.card, 'revelacao', col, events);
+  for (const pid of order) {
+    if (weaknessActive(s, pid, col)) fireAbilities(s, pid, s.players[pid].front[col]!.card, 'medroso', col, events);
+  }
+  for (const pid of order) {
+    const card = s.players[pid].front[col]!.card;
+    const ab = abilitiesOf(card).find((a) => a.keyword === 'fraqueza');
+    if (ab && weaknessActive(s, pid, col)) {
+      events.push({ kind: 'ability', player: pid, uid: card.uid, keyword: 'fraqueza', text: abilityText(ab), passive: true });
+    }
+  }
 }
 
 /**
@@ -541,6 +700,10 @@ export function doFlip(s: GameState, pid: PlayerId, events: GameEvent[]) {
   c.flipped[pid] = true;
   events.push({ kind: 'flip', player: pid, col: c.col, flipped: true, uid: slot.card.uid });
   if (isTrick(slot.card.defId)) triggerTrick(s, pid, c.col, slot.card, events);
+  else {
+    fireAbilities(s, pid, slot.card, 'revelacao', c.col, events);
+    fireAbilities(s, pid, slot.card, 'vigilante', c.col, events);
+  }
 }
 
 /** Efeito de um truque/equipamento virado na backline do campo do duelo. */
@@ -623,6 +786,14 @@ function finishDuel(s: GameState, events: GameEvent[]) {
     }
     reason = 'dados';
   }
+  // Prêmio de Consolação: cartas do lado que perdeu (frontline e backline virada)
+  const loserId = other(winner);
+  const lp = s.players[loserId];
+  const involved = [lp.front[c.col]?.card];
+  const lb = lp.back[c.col];
+  if (c.flipped[loserId] && lb && lb.revealed && !isTrick(lb.card.defId)) involved.push(lb.card);
+  const consolation: GameEvent[] = [];
+  for (const card of involved) if (card) fireAbilities(s, loserId, card, 'consolacao', c.col, consolation);
   s.columns[c.col] = { resolved: true, winner };
   s.players[winner].duelWins++;
   s.initiative = other(winner);
@@ -630,6 +801,7 @@ function finishDuel(s: GameState, events: GameEvent[]) {
     kind: 'result', col: c.col, winner, totals: st.totals, reason, dice,
     duelWins: [s.players[0].duelWins, s.players[1].duelWins],
   });
+  events.push(...consolation);
 
   if (s.players[winner].duelWins >= RULES.duelsToWinRound) return roundOver(s, winner, events);
 
@@ -667,6 +839,11 @@ function endRound(s: GameState, events: GameEvent[]) {
           const exiles = EXILE_ON_DEATH.includes(d.principle) || d.exile === true;
           to = exiles && x.revealed ? 'exilio' : 'cemiterio';
         }
+        if (p.keepers.includes(x.card.uid) && !isTrick(x.card.defId)) {
+          p.hand.push(x.card); // Prêmio de Consolação: volta para a mão
+          row[i] = null;
+          return;
+        }
         (to === 'exilio' ? p.exile : to === 'cemiterio2' ? p.graveTricks : p.graveChars).push(x.card);
         moved.push({ player: pid, uid: x.card.uid, to });
         row[i] = null;
@@ -674,6 +851,10 @@ function endRound(s: GameState, events: GameEvent[]) {
     }
   }
   s.clash = null;
+  for (const p of s.players) {
+    p.buffs = [];
+    p.keepers = [];
+  }
   events.push({ kind: 'roundEnd', round: s.round, winner, points: [s.players[0].points, s.players[1].points], moved });
   if (s.players[winner].points >= RULES.pointsToWin) return endGame(s, events, `${RULES.pointsToWin} rodadas vencidas`);
   if (s.round >= RULES.maxRounds) return endGame(s, events, 'limite de rodadas');

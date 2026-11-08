@@ -10,7 +10,7 @@ import {
   type Principle,
 } from '../config';
 import { createBot, describeAction, heuristicPlace, type Bot, type BotDecision } from '../ai/bot';
-import { TRICKS, getDef, getTrick, isTrick } from '../engine/cards';
+import { KEYWORDS, TRICKS, getDef, getTrick, isTrick, type Keyword } from '../engine/cards';
 import {
   applyAction,
   duelStanding,
@@ -775,6 +775,12 @@ export class App {
             await wait(500);
           }
           break;
+        case 'ability':
+          if (ev.newUid) this.fx.set(ev.newUid, 'flip-in');
+          sound.play('turn');
+          this.render();
+          await this.showAbility(ev);
+          break;
         case 'exchange':
           if (ev.exchanged) {
             if (ev.newFrontUid) this.fx.set(ev.newFrontUid, 'enter');
@@ -918,6 +924,31 @@ export class App {
         </div>
       </div>`,
       2600,
+      'parchment',
+    );
+  }
+
+  private async showAbility(ev: Extract<GameEvent, { kind: 'ability' }>) {
+    const c = findCard(this.s, ev.uid);
+    const who = ev.player === ME ? 'Sua carta' : 'Carta do bot';
+    const kw = KEYWORDS[ev.keyword];
+    const extra =
+      ev.keyword === 'medroso' && ev.newUid
+        ? `<p>Fugiu para a mão. Entrou no lugar:</p><div class="trigger-result">${cardHtml(findCard(this.s, ev.newUid)!)}</div>`
+        : ev.drawn
+          ? `<p>${ev.player === ME ? 'Você comprou' : 'O bot comprou'} ${ev.drawn} carta(s).</p>`
+          : '';
+    await this.stage(
+      `<div class="trigger-pop">
+        <div class="trigger-card">${c ? cardHtml(c) : ''}</div>
+        <div class="trigger-body">
+          <div class="eyebrow">${who} · ${ev.passive ? 'efeito ativo' : 'habilidade'}</div>
+          <h3>${esc(kw.name)}</h3>
+          <p>${esc(ev.text.replace(/^[^:]+:\s*/, ''))}</p>
+          ${extra}
+        </div>
+      </div>`,
+      2300,
       'parchment',
     );
   }
@@ -1157,6 +1188,9 @@ export class App {
           this.pushLog(cls(ev.player), `${who(ev.player)} virou a backline: ${what}.`);
           break;
         }
+        case 'ability':
+          this.pushLog(cls(ev.player), `${nm(ev.uid)} — ${ev.text}${ev.newUid ? ` Entrou ${nm(ev.newUid)}.` : ''}`);
+          break;
         case 'exchange':
           if (ev.exchanged) this.pushLog(cls(ev.player), `${who(ev.player)} trocou: ${nm(ev.newFrontUid)} foi para a frente e ${nm(ev.newBackUid)} para trás.`);
           else this.pushLog(cls(ev.player), `${who(ev.player)} manteve a frontline.`);
@@ -1525,11 +1559,13 @@ export class App {
     const beatsList = PRINCIPLE_BEATS[d.principle].map((x) => PRINCIPLE_LABEL[x]).join(', ');
     const losesTo = (Object.keys(PRINCIPLE_BEATS) as Principle[]).filter((k) => PRINCIPLE_BEATS[k].includes(d.principle)).map((x) => PRINCIPLE_LABEL[x]);
     const where = row === 'front' ? 'Está na frontline: disputa com o ATK.' : row === 'back' ? 'Está na backline: se virada no duelo, soma a DEF.' : '';
+    const kws = (d.abilities ?? []).map((a) => `<small><b>${KEYWORDS[a.keyword].name}</b> — ${esc(KEYWORDS[a.keyword].rule)}</small>`).join('');
     return `${cardHtml(card, { big: true, row })}
       <div class="details">
         <b>${PRINCIPLE_LABEL[d.principle]}</b> vence ${beatsList}${losesTo.length ? `; perde para ${losesTo.join(', ')}` : ''}.
         ${d.principle === 'realeza' ? ' Se for revelada, vai ao <b>exílio</b> no fim da rodada; oculta, vai ao cemitério.' : ''}<br>
         ATK ${d.atk} na frontline · DEF ${d.def} na backline. ${where}
+        ${kws}
       </div>`;
   }
 
@@ -1628,6 +1664,8 @@ function rulesHtml(): string {
     <li>Rodada: quem vencer ${RULES.duelsToWinRound} duelos leva 1 ponto. Tudo vai ao cemitério; Realeza revelada, ao exílio.</li>
     <li>Vence quem fizer ${RULES.pointsToWin} pontos (no máximo ${RULES.maxRounds} rodadas).</li>
   </ul>
+  <h3 class="rules-sub">Palavras-chave</h3>
+  <ul class="rules-list">${(Object.keys(KEYWORDS) as Keyword[]).map((k) => `<li><b>${KEYWORDS[k].name}</b>: ${esc(KEYWORDS[k].rule)}</li>`).join('')}</ul>
   <h3 class="rules-sub">Truques e equipamentos</h3>
   <ul class="rules-list">${TRICKS.map((t) => `<li><b>${esc(t.name)}</b> (${t.kind}): ${esc(t.text.replace('Ao ser virado: ', ''))}</li>`).join('')}</ul>`;
 }

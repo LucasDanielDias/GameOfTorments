@@ -58,6 +58,46 @@ Deck provisório de truques: 14 cartas (2 de cada, 1 Contra-ordem e 1 Coroa Fals
 - Frontlines empatadas no ATK: quem escolheu o campo fica "à frente" e o outro decide primeiro se vira.
 - Vara de Pesca que encontra um truque: o truque fica revelado e sem efeito.
 
+## Palavras-chave dos personagens
+
+A palavra-chave diz **quando** o efeito acontece; o efeito diz **o que** acontece. Cada carta é só dados em
+`src/engine/cards.ts` (`abilities`), e o texto da regra na carta é gerado automaticamente.
+
+| Palavra-chave | Quando |
+| --- | --- |
+| Revelação | quando a carta é revelada (frontline no duelo ou backline virada) |
+| Prêmio de Consolação | se a carta perde o duelo |
+| Fraqueza | enquanto o inimigo tem vantagem de princípio sobre você |
+| Vigilante | se você foi virado na backline |
+| Nostálgico | cresce com as cartas no seu cemitério |
+| Bastardo | cresce com as cartas no exílio (dos dois jogadores) |
+| Medroso | ativa se for revelado alguém com vantagem de princípio contra ele |
+
+Efeitos disponíveis: `+ATK` / `+DEF` neste duelo, escala por cemitério/exílio, comprar truques ou personagens,
+anular a vantagem de princípio no duelo, bônus por princípio até o fim da rodada, voltar para a mão no fim da
+rodada e fugir (volta para a mão e o topo do deck entra no lugar).
+
+### Personagens com palavra-chave (provisórios)
+
+| Carta | Princípio | ATK/DEF | Habilidade |
+| --- | --- | --- | --- |
+| Inventor Distraído | Engenharia | 3/4 | Revelação: compre 1 truque |
+| Torre de Vigia Móvel | Engenharia | 2/5 | Vigilante: +3 de defesa neste duelo |
+| Mineiro Saudoso | Engenharia | 2/4 | Nostálgico: +1 ATK a cada 3 cartas no cemitério (máx. +4) |
+| Aprendiz Assustado | Engenharia | 4/3 | Medroso: foge |
+| Sabotador de Pontes | Engenharia | 3/3 | Vigilante: neste duelo não há vantagem de princípio |
+| Recruta Teimoso | Infantaria | 3/3 | Fraqueza: neste duelo não há vantagem de princípio |
+| Sentinela da Muralha | Infantaria | 2/5 | Vigilante: suas Infantarias ganham +1 DEF nesta rodada |
+| Desertor Arrependido | Infantaria | 4/2 | Prêmio de Consolação: volta para a mão no fim da rodada |
+| Viúva de Guerra | Infantaria | 3/4 | Nostálgico: +1 ATK a cada 2 cartas no cemitério (máx. +3) |
+| Porta-Bandeira Caído | Infantaria | 3/3 | Prêmio de Consolação: suas Infantarias ganham +1 ATK nesta rodada |
+| Oficial de Logística | QG | 2/5 | Prêmio de Consolação: compre 2 truques |
+| Arauto do Comando | QG | 3/3 | Revelação: +2 ATK neste duelo |
+| Tenente Covarde | QG | 5/2 | Medroso: foge |
+| Conselheiro Velado | QG | 2/6 | Fraqueza: sem vantagem de princípio e +2 ATK |
+| Herdeiro Bastardo | Realeza | 4/4 | Bastardo: +1 ATK por carta no exílio (máx. +4) |
+| Rainha-Mãe Exilada | Realeza | 4/5 | Bastardo: +1 DEF por carta no exílio (máx. +4); Revelação: compre 1 truque |
+
 ## Interface
 
 - A partida mostra cada passo e **espera terminar** antes de seguir: efeito de truque, placa de madeira com o

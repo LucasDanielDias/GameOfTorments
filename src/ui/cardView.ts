@@ -1,5 +1,5 @@
 import { PRINCIPLE_LABEL } from '../config';
-import { getDef, getTrick, isTrick } from '../engine/cards';
+import { KEYWORDS, abilityText, getDef, getTrick, isTrick } from '../engine/cards';
 import type { CardInst, Row } from '../engine/game';
 import versoEmblema from '../assets/verso-emblema.jpg';
 import { ART, ICON, emblemSvg, trickSvg } from './art';
@@ -40,6 +40,8 @@ export function cardHtml(card: CardInst, o: CardViewOpts = {}): string {
       <div class="stat def" title="Defesa (backline)">${d.def}${ICON.shield}</div>
       ${artHtml}
       <div class="name">${esc(d.name)}</div>
+      ${d.abilities?.length ? `<div class="kw-line">${d.abilities.map((a) => KEYWORDS[a.keyword].name).join(' · ')}</div>` : ''}
+      ${d.abilities?.length ? `<div class="abil">${d.abilities.map((a) => `<p>${esc(abilityText(a)).replace(/^([^:]+):/, '<b>$1:</b>')}</p>`).join('')}</div>` : ''}
       <div class="text">${esc(d.text)}</div>
       <div class="ptag">${crown}${PRINCIPLE_LABEL[d.principle]}</div>
       ${o.badge ? `<div class="badge">${o.badge}</div>` : ''}
