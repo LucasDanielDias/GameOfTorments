@@ -138,6 +138,30 @@ export const TRICKS: TrickDef[] = [
     id: 't-vara-de-pesca', name: 'Vara de Pesca', kind: 'equipamento',
     text: 'Ao ser virado: se a backline inimiga deste campo for um personagem, você o rouba para a sua mão.',
   },
+  {
+    id: 't-escudo-de-torre', name: 'Escudo de Torre', kind: 'equipamento',
+    text: 'Ao ser virado: sua frontline deste campo ganha +4 de defesa neste duelo.',
+  },
+  {
+    id: 't-lanca-de-cerco', name: 'Lança de Cerco', kind: 'equipamento',
+    text: 'Ao ser virado: sua frontline deste campo ganha +3 de ATK neste duelo.',
+  },
+  {
+    id: 't-sabotagem', name: 'Sabotagem', kind: 'truque',
+    text: 'Ao ser virado: a backline inimiga deste campo vai para o cemitério sem fazer efeito.',
+  },
+  {
+    id: 't-contra-ordem', name: 'Contra-ordem', kind: 'truque',
+    text: 'Ao ser virado: neste duelo, a vantagem de princípio se inverte.',
+  },
+  {
+    id: 't-coroa-falsa', name: 'Coroa Falsa', kind: 'truque',
+    text: 'Ao ser virado: neste duelo, sua frontline conta como Realeza.',
+  },
+  {
+    id: 't-tambor-de-guerra', name: 'Tambor de Guerra', kind: 'equipamento',
+    text: 'Ao ser virado: neste duelo, sua frontline ganha +2 de ATK e o rival não pode mais virar a backline dele.',
+  },
 ];
 
 export const TRICK_BY_ID: Record<string, TrickDef> = Object.fromEntries(TRICKS.map((c) => [c.id, c]));
@@ -152,8 +176,14 @@ export function getTrick(id: string): TrickDef {
   return d;
 }
 
-/** Deck provisório de truques/equipamentos: 10 cartas. */
+/** Deck provisório de truques/equipamentos: 14 cartas. */
 export const TRICK_DECK: string[] = [
-  ...Array(5).fill('t-mapa-confuso'),
-  ...Array(5).fill('t-vara-de-pesca'),
+  't-mapa-confuso', 't-mapa-confuso',
+  't-vara-de-pesca', 't-vara-de-pesca',
+  't-escudo-de-torre', 't-escudo-de-torre',
+  't-lanca-de-cerco', 't-lanca-de-cerco',
+  't-sabotagem', 't-sabotagem',
+  't-contra-ordem',
+  't-coroa-falsa',
+  't-tambor-de-guerra', 't-tambor-de-guerra',
 ];

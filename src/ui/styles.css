@@ -810,3 +810,249 @@ button:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--ink-3)
 .slot .col-mark.won { font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase; padding: 2px 6px; }
 /* olho de "carta oculta": no alto, entre ATK e DEF, sem cobrir o princípio */
 .card.concealed .badge { top: calc(var(--cw) * 0.03); bottom: auto; left: 50%; right: auto; transform: translateX(-50%); }
+
+/* ═══ Botões padronizados ═══════════════════════════════════════════════
+ * Uma altura, um tamanho de texto. Primário = ação principal (preenchido),
+ * secundário = alternativas (contorno). Instruções nunca parecem botão. */
+.btn, .seg-btn, .btn-icon {
+  height: 36px;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 16px;
+  font: 600 11px/1 var(--f-body);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+  border: 1px solid var(--ink-2);
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease, transform 0.15s ease;
+}
+.btn:active { transform: translateY(1px); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+.btn-primary { background: var(--ink-2); color: var(--paper); border-color: var(--ink-2); }
+.btn-primary:hover:not(:disabled) { background: var(--ink); border-color: var(--ink); }
+.btn-secondary { background: transparent; color: var(--ink-2); }
+.btn-secondary:hover:not(:disabled) { background: var(--paper-2); }
+.btn-secondary[aria-pressed='true'] { background: var(--ink-2); color: var(--paper); }
+.btn-icon { width: 36px; padding: 0; background: transparent; color: var(--ink-2); }
+.btn-icon svg { width: 18px; height: 18px; }
+.seg { border-color: var(--ink-2); }
+.seg .seg-btn { border: 0; background: transparent; color: var(--ink-2); padding: 0 14px; }
+.seg .seg-btn + .seg-btn { border-left: 1px solid var(--line); }
+.seg .seg-btn[aria-pressed='true'] { background: var(--ink-2); color: var(--paper); }
+/* na faixa de couro: dourado */
+.strip .btn-primary { background: var(--gold); color: var(--ink); border-color: var(--gold); }
+.strip .btn-primary:hover:not(:disabled) { background: var(--gold-2); border-color: var(--gold-2); }
+.strip .btn-secondary { background: transparent; color: var(--gold-2); border-color: rgba(197, 169, 115, 0.65); }
+.strip .btn-secondary:hover:not(:disabled) { background: rgba(197, 169, 115, 0.14); }
+.strip-note { font-size: 12px; font-style: italic; color: var(--gold-2); opacity: 0.85; white-space: nowrap; }
+.strip .actions { gap: 8px; }
+.controls { gap: 8px; }
+
+/* ═══ Painel lateral: oculto até o jogador pedir ═══════════════════════ */
+.panel { display: none !important; }
+.show-panel .panel { display: grid !important; }
+@media (min-width: 1560px) {
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  .show-panel .layout { grid-template-columns: minmax(0, 1fr) 300px; }
+  .show-panel .panel { display: flex !important; }
+}
+.rules-sub { font-family: var(--f-display); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink-3); margin: 14px 0 0; }
+
+/* ═══ Janela flutuante da carta ═══════════════════════════════════════ */
+.peek {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 40;
+  width: 270px;
+  max-width: calc(100vw - 16px);
+  padding: 14px;
+  background: var(--paper) url('../assets/papel.png');
+  border: 1px solid var(--ink-3);
+  outline: 1px solid var(--line);
+  outline-offset: -6px;
+  box-shadow: 0 18px 40px -16px rgba(26, 22, 20, 0.6);
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  pointer-events: none;
+  animation: peekIn 0.18s ease-out;
+}
+.peek .card.lg { --cw: 210px; }
+.peek .details { font-size: 12.5px; line-height: 1.5; color: var(--ink-2); }
+.peek .details b { color: var(--ink); }
+.peek .details small { display: block; margin-top: 6px; color: var(--muted); }
+@keyframes peekIn { from { opacity: 0; } to { opacity: 1; } }
+@media (hover: none) { .peek { pointer-events: auto; } }
+
+/* ═══ Marcador de etapas ══════════════════════════════════════════════ */
+.strip { grid-template-rows: auto auto; row-gap: 8px; }
+.stepper {
+  grid-column: 1 / -1;
+  list-style: none;
+  margin: 0;
+  padding: 0 0 8px;
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid rgba(197, 169, 115, 0.3);
+  overflow-x: auto;
+}
+.step {
+  flex: 1 1 0;
+  min-width: max-content;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(225, 215, 184, 0.45);
+  transition: color 0.35s ease;
+}
+.step-dot {
+  width: 20px; height: 20px;
+  display: grid; place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  font-family: var(--f-display);
+  font-size: 11px;
+  letter-spacing: 0;
+  transition: background 0.35s ease, color 0.35s ease, transform 0.35s ease;
+}
+.step.done { color: rgba(225, 215, 184, 0.75); }
+.step.done .step-dot { background: rgba(197, 169, 115, 0.3); }
+.step.current { color: var(--paper); }
+.step.current .step-dot { background: var(--gold); color: var(--ink); border-color: var(--gold); transform: scale(1.12); }
+.step + .step::before { content: ''; flex: 0 0 14px; height: 1px; background: currentColor; opacity: 0.5; }
+.turn-no b { color: var(--paper); font-weight: 600; }
+.turn-no { text-transform: none; letter-spacing: 0.04em; font-size: 12px; }
+.plate.acting { box-shadow: 0 0 0 3px var(--gold); transition: box-shadow 0.35s ease; }
+.slot .lock-mark { position: absolute; z-index: 4; top: 4px; right: 4px; width: 16px; height: 16px; color: var(--ink-3); opacity: 0.7; pointer-events: none; }
+.slot .lock-mark svg { width: 100%; height: 100%; }
+
+/* ═══ Avisos no centro da mesa (esperam terminar) ═════════════════════ */
+.stage {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(26, 22, 20, 0.38);
+  animation: stageBg 0.3s ease-out;
+  cursor: pointer;
+}
+.stage-inner { animation: stageIn 0.45s cubic-bezier(0.2, 0.8, 0.25, 1.1); max-width: 100%; }
+.stage.leaving { animation: stageBgOut 0.26s ease-in forwards; }
+.stage.leaving .stage-inner { animation: stageOut 0.26s ease-in forwards; }
+@keyframes stageBg { from { background: rgba(26, 22, 20, 0); } }
+@keyframes stageBgOut { to { background: rgba(26, 22, 20, 0); } }
+@keyframes stageIn { from { opacity: 0; transform: translateY(-24px) scale(0.94); } to { opacity: 1; transform: none; } }
+@keyframes stageOut { to { opacity: 0; transform: translateY(10px) scale(0.97); } }
+
+/* placa de madeira */
+.plaque {
+  position: relative;
+  min-width: min(420px, calc(100vw - 32px));
+  padding: 26px 34px 22px;
+  text-align: center;
+  color: #f3e2bf;
+  background:
+    repeating-linear-gradient(91deg, rgba(0, 0, 0, 0.07) 0 2px, transparent 2px 7px),
+    repeating-linear-gradient(89deg, rgba(255, 230, 190, 0.05) 0 1px, transparent 1px 13px),
+    radial-gradient(ellipse at 30% 40%, rgba(255, 220, 170, 0.12), transparent 60%),
+    linear-gradient(180deg, #8b5b35 0%, #74482a 50%, #5c3720 100%);
+  border: 7px solid #3e2414;
+  box-shadow: inset 0 0 0 1px rgba(255, 220, 170, 0.25), inset 0 0 28px rgba(0, 0, 0, 0.45), 0 22px 50px -18px rgba(0, 0, 0, 0.7);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.55), 0 -1px 0 rgba(255, 230, 190, 0.12);
+}
+.plaque::before, .plaque::after {
+  content: '';
+  position: absolute;
+  top: 8px;
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #d9c08f, #6a4a24 70%);
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.6);
+}
+.plaque::before { left: 8px; }
+.plaque::after { right: 8px; }
+.plaque-eyebrow { font-size: 11px; letter-spacing: 0.26em; text-transform: uppercase; opacity: 0.8; }
+.plaque-title { font-family: var(--f-display); font-weight: 900; font-size: clamp(28px, 5vw, 40px); letter-spacing: 0.04em; text-transform: uppercase; margin: 6px 0 2px; }
+.plaque-why { font-style: italic; font-size: 14px; opacity: 0.9; }
+.plaque-score { display: flex; align-items: center; justify-content: center; gap: 22px; margin: 16px 0 10px; }
+.plaque-score > div { display: grid; justify-items: center; gap: 4px; min-width: 90px; }
+.plaque-score span { font-size: 11px; letter-spacing: 0.22em; text-transform: uppercase; opacity: 0.8; }
+.plaque-score b { font-family: var(--f-display); font-weight: 900; font-size: 54px; line-height: 1; font-variant-numeric: tabular-nums; }
+.plaque-score em { font-family: var(--f-display); font-style: normal; font-size: 28px; opacity: 0.7; }
+.plaque-pips { display: flex; gap: 6px; margin-top: 4px; }
+.plaque-pips i { width: 11px; height: 11px; transform: rotate(45deg); border: 1px solid #f3e2bf; }
+.plaque-pips i.on { background: #e9c97f; border-color: #e9c97f; box-shadow: 0 0 6px rgba(233, 201, 127, 0.7); }
+.plaque-foot { font-size: 12px; opacity: 0.8; margin-top: 4px; max-width: 46ch; margin-inline: auto; }
+.plaque .btn { margin-top: 16px; }
+.plaque .btn-primary { background: #e9c97f; color: #2b1a0e; border-color: #e9c97f; text-shadow: none; }
+.plaque .btn-primary:hover { background: #f3dca2; }
+.plaque.big { padding-block: 30px 26px; }
+
+/* aviso de truque ativado (pergaminho) */
+.stage.parchment .stage-inner {
+  background: var(--paper) url('../assets/papel.png');
+  border: 1px solid var(--ink-3);
+  outline: 1px solid var(--line);
+  outline-offset: -7px;
+  padding: 22px;
+  box-shadow: 0 22px 50px -18px rgba(0, 0, 0, 0.6);
+}
+.trigger-pop { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; justify-content: center; max-width: 560px; }
+.trigger-card { --cw: 130px; }
+.trigger-body { min-width: 0; flex: 1 1 220px; }
+.trigger-body .eyebrow { font-size: 10.5px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--ink-3); }
+.trigger-body h3 { font-family: var(--f-display); font-weight: 900; font-size: 26px; margin: 4px 0 6px; text-transform: uppercase; letter-spacing: 0.03em; }
+.trigger-body p { margin: 0 0 10px; color: var(--ink-2); line-height: 1.5; }
+.trigger-result { --cw: 104px; display: flex; animation: stageIn 0.5s 0.25s both cubic-bezier(0.2, 0.8, 0.25, 1.1); }
+
+/* ═══ Transições mais suaves ══════════════════════════════════════════ */
+.card.flip-in { animation: flipIn 0.7s cubic-bezier(0.25, 0.8, 0.3, 1); transform-style: preserve-3d; }
+@keyframes flipIn {
+  0% { transform: perspective(600px) rotateY(-180deg) scale(1.04); filter: brightness(0.6); }
+  55% { filter: brightness(1.1); }
+  100% { transform: perspective(600px) rotateY(0); filter: none; }
+}
+.overlay { animation: stageBg 0.3s ease-out; }
+.overlay .modal { animation: stageIn 0.45s cubic-bezier(0.2, 0.8, 0.25, 1.1); }
+.slot, .plate, .pile { transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, outline-color 0.3s ease; }
+.toast { animation: peekIn 0.25s ease-out; }
+::view-transition-old(root), ::view-transition-new(root) { animation: none; }
+::view-transition-group(*) { animation-duration: 0.42s; animation-timing-function: cubic-bezier(0.25, 0.8, 0.3, 1); }
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*) { animation-duration: 0.01ms; }
+}
+/* camadas: avisos e janelas acima da carta flutuante */
+.app > #stage-root, .app > #overlay-root { position: static; z-index: auto; }
+.app > .peek { position: fixed; z-index: 40; }
+.stage { z-index: 50; }
+.overlay { z-index: 55; }
+.layout .panel { grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); }
+.plaque { min-width: 0; width: min(440px, calc(100vw - 32px)); }
+.plaque-score { gap: 12px; }
+.plaque-score > div { min-width: 70px; }
+/* o atributo hidden sempre vence (a janela flutuante tem display próprio) */
+.peek[hidden], .toast[hidden] { display: none !important; }
+
+@media (max-width: 640px) {
+  .strip { grid-template-columns: minmax(0, 1fr) auto; }
+  .strip .actions { grid-column: 1 / -1; justify-content: center; flex-wrap: wrap; }
+  .step-label { display: none; }
+  .step.current .step-label { display: inline; }
+  .strip .turn-who { font-size: 15px; }
+  .btn, .seg-btn, .btn-icon { height: 34px; min-height: 34px; padding: 0 12px; letter-spacing: 0.12em; }
+  .btn-icon { width: 34px; padding: 0; }
+  .peek { width: min(250px, calc(100vw - 16px)); }
+  .peek .card.lg { --cw: 170px; }
+}
+.tiny .duel-pips i { width: 6px; height: 6px; }
+.tiny .duel-pips { gap: 2px; }

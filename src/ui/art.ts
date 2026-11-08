@@ -76,6 +76,44 @@ const TRICK_ART: Record<string, string> = {
     <path d="M78 60 q0 10 -7 10 q-6 0 -6 -6"/>
     <path d="M65 64 l-3 -3"/>
     <path d="M14 90 L30 90"/>`,
+  // escudo de torre alto, com rebites
+  't-escudo-de-torre': `
+    <path d="M30 14 H70 V62 C70 76 60 84 50 90 C40 84 30 76 30 62 Z"/>
+    <path d="M36 20 H64 V60 C64 71 57 78 50 82 C43 78 36 71 36 60 Z"/>
+    <path d="M50 22 V80 M38 44 H62"/>
+    <circle cx="34" cy="18" r="1.6"/><circle cx="66" cy="18" r="1.6"/>`,
+  // lança de cerco com flâmula
+  't-lanca-de-cerco': `
+    <path d="M20 84 L74 22"/>
+    <path d="M74 22 L84 12 L80 26 Z"/>
+    <path d="M66 32 L60 26 M70 28 L64 22"/>
+    <path d="M56 38 Q66 46 58 54 Q54 48 48 46 Z"/>
+    <path d="M18 88 l6 -6"/>`,
+  // engrenagem quebrada com faísca
+  't-sabotagem': `
+    <path d="M38 30 A22 22 0 1 0 64 70"/>
+    <path d="M30 26 l-4 -6 M24 40 l-7 -2 M24 58 l-7 3 M34 72 l-4 6 M52 78 l1 7"/>
+    <circle cx="44" cy="52" r="7"/>
+    <path d="M60 22 L56 36 L66 34 L60 50"/>
+    <path d="M70 40 l8 -4 M72 48 l9 1 M66 30 l6 -8"/>`,
+  // duas setas que se cruzam e invertem
+  't-contra-ordem': `
+    <path d="M20 34 H72"/><path d="M64 26 L74 34 L64 42"/>
+    <path d="M80 66 H28"/><path d="M36 58 L26 66 L36 74"/>
+    <path d="M50 20 V80" stroke-dasharray="3 5"/>`,
+  // coroa com máscara
+  't-coroa-falsa': `
+    <path d="M24 46 L20 20 L36 34 L50 14 L64 34 L80 20 L76 46 Z"/>
+    <path d="M24 52 H76"/>
+    <path d="M28 62 Q50 54 72 62 Q70 80 56 82 Q50 74 44 82 Q30 80 28 62 Z"/>
+    <path d="M36 66 q5 -4 10 0 M54 66 q5 -4 10 0"/>`,
+  // tambor de guerra com baquetas
+  't-tambor-de-guerra': `
+    <ellipse cx="50" cy="40" rx="26" ry="9"/>
+    <path d="M24 40 V70 Q50 84 76 70 V40"/>
+    <path d="M28 46 L40 74 M40 48 L52 78 M52 48 L64 76 M64 46 L74 70"/>
+    <path d="M30 14 L48 36 M70 14 L52 36"/>
+    <circle cx="29" cy="13" r="3"/><circle cx="71" cy="13" r="3"/>`,
 };
 
 export function trickSvg(id: string): string {

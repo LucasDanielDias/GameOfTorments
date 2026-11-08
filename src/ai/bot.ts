@@ -2,8 +2,10 @@ import { AI, RULES, type Difficulty } from '../config';
 import { getDef, isTrick } from '../engine/cards';
 import {
   applyAction,
+  canFlip,
   compareFronts,
   determinize,
+  doFlip,
   duelStanding,
   legalActions,
   openColumns,
@@ -87,10 +89,22 @@ const def = (c: CardInst) => getDef(c.defId).def;
 // ─── Política média (heurística) ──────────────────────────────────────────
 
 /** Valor de uma carta oculta na backline (personagem = DEF; truque = valor estimado). */
+export const TRICK_VALUE: Record<string, number> = {
+  't-mapa-confuso': 4,
+  't-vara-de-pesca': 4.5,
+  't-escudo-de-torre': 4,
+  't-lanca-de-cerco': 3.5,
+  't-sabotagem': 4,
+  't-contra-ordem': 5,
+  't-coroa-falsa': 5,
+  't-tambor-de-guerra': 4,
+};
+
+/** Truques que viram um duelo perdido por princípio (os outros somam valores). */
+const PRINCIPLE_FIXERS = new Set(['t-mapa-confuso', 't-contra-ordem', 't-coroa-falsa']);
+
 export function backValue(c: CardInst): number {
-  if (c.defId === 't-mapa-confuso') return 4;
-  if (c.defId === 't-vara-de-pesca') return 4.5;
-  return def(c);
+  return isTrick(c.defId) ? TRICK_VALUE[c.defId] ?? 3 : def(c);
 }
 
 export function heuristicPlace(s: GameState, pid: PlayerId, r: Rng, jitter = 0): Extract<Action, { type: 'place' }> {
@@ -101,32 +115,26 @@ export function heuristicPlace(s: GameState, pid: PlayerId, r: Rng, jitter = 0):
   const fronts = shuffled(r, scored.slice(0, RULES.columns));
   // backline é opcional; o bot costuma preencher tudo, e nas variações (difícil) às vezes guarda cartas
   const need = jitter && rnd(r) < 0.25 ? Math.max(0, maxBack(p) - 1 - Math.floor(rnd(r) * 2)) : maxBack(p);
-  // truques: Mapa Confuso atrás das frentes fracas, no máximo 1 Vara de Pesca
   const backs: (CardInst | null)[] = Array(RULES.columns).fill(null);
   let placed = 0;
+  // frentes mais fracas primeiro: recebem truques que salvam duelo perdido por princípio
   const order = fronts.map((x, col) => ({ col, f: x.f })).sort((a, b) => a.f - b.f);
-  const mapas = p.trickHand.filter((c) => c.defId === 't-mapa-confuso');
-  const varas = p.trickHand.filter((c) => c.defId === 't-vara-de-pesca');
-  const trickRate = jitter ? 0.35 + rnd(r) * 0.5 : 0.6;
+  const tricks = shuffled(r, p.trickHand).sort((a, b) => Number(PRINCIPLE_FIXERS.has(b.defId)) - Number(PRINCIPLE_FIXERS.has(a.defId)));
+  const trickRate = jitter ? 0.35 + rnd(r) * 0.5 : 0.65;
+  const maxTricks = 2 + (jitter ? Math.floor(rnd(r) * 2) : 0);
   for (const o of order) {
-    if (placed >= need) break;
-    if (o.f < 0.45 && mapas.length && rnd(r) < trickRate + 0.3) {
-      backs[o.col] = mapas.pop()!;
-      placed++;
-    }
-  }
-  if (varas.length && placed < need && rnd(r) < trickRate) {
-    const free = order.filter((o) => !backs[o.col]);
-    if (free.length) {
-      backs[free[Math.floor(free.length / 2)].col] = varas.pop()!;
+    if (placed >= need || placed >= maxTricks || !tricks.length) break;
+    const t = tricks[0];
+    const good = PRINCIPLE_FIXERS.has(t.defId) ? o.f < 0.5 : o.f >= 0.3;
+    if (good && rnd(r) < trickRate) {
+      backs[o.col] = tricks.shift()!;
       placed++;
     }
   }
   const restChars = scored.slice(RULES.columns).sort((a, b) => b.d - a.d).map((x) => x.c);
-  const leftoverTricks = [...mapas, ...varas];
   for (let col = 0; col < RULES.columns && placed < need; col++) {
     if (backs[col]) continue;
-    const c = restChars.shift() ?? leftoverTricks.shift();
+    const c = restChars.shift() ?? tricks.shift();
     if (c) {
       backs[col] = c;
       placed++;
@@ -172,51 +180,66 @@ function mediumDecide(s: GameState, r: Rng): BotDecision {
     }
 
     case 'flip': {
+      // Avalia virar ou não sorteando o que o rival esconde (sem espiar).
       const c = s.clash!;
       const back = P.back[c.col]!.card;
-      const st = duelStanding(s, c.col);
-      const mine = st.totals[me];
-      const theirs = st.totals[other(me)];
-      const enemyBack = O.back[c.col];
-      const enemyBackIsChar = !!enemyBack && !isTrick(enemyBack.card.defId);
-      const winning = st.leader === me;
-      if (back.defId === 't-mapa-confuso') {
-        const flip = !winning;
-        return { action: { type: 'flip', flip }, reason: flip ? 'Viro o Mapa Confuso: troco a frontline perdedora pela do topo do deck.' : 'Já estou vencendo; guardo o Mapa Confuso oculto.' };
+      const now = duelStanding(s, c.col);
+      const winningNow = now.leader === me ? 1 : now.leader === null ? 0.5 : 0;
+      let gain = 0;
+      const N = 6;
+      for (let i = 0; i < N; i++) {
+        const w = determinize(s, me, (rnd(r) * 2 ** 32) >>> 0);
+        const handBefore = w.players[me].hand.length;
+        doFlip(w, me, []);
+        const st = duelStanding(w, c.col);
+        let v = st.leader === me ? 1 : st.leader === null ? 0.5 : 0;
+        // o rival ainda pode responder se eu era o perdedor e ele tem backline oculta
+        if (c.stage === 'loser' && canFlip(w, other(me)) && st.leader === me) v -= 0.25;
+        v += 0.35 * (w.players[me].hand.length - handBefore); // carta roubada
+        if (!w.players[other(me)].back[c.col] && O.back[c.col]) v += 0.15; // backline rival destruída
+        gain += v - winningNow;
       }
-      if (back.defId === 't-vara-de-pesca') {
-        const flip = !!enemyBack && (enemyBack.revealed ? enemyBackIsChar : true);
-        return { action: { type: 'flip', flip }, reason: flip ? 'Viro a Vara de Pesca para roubar a backline do rival neste campo.' : 'Não há o que pescar aqui.' };
-      }
-      if (st.byPrinciple) return { action: { type: 'flip', flip: false }, reason: 'O princípio já decidiu; somar DEF não muda nada.' };
-      const withBack = mine + def(back);
-      if (c.stage === 'loser') {
-        const flip = withBack > theirs || (withBack === theirs && def(back) <= 3);
-        return { action: { type: 'flip', flip }, reason: flip ? `Virando, fico com ${withBack} contra ${theirs}.` : `Nem virando passo de ${theirs}; guardo a carta oculta para trocar depois.` };
-      }
-      const flip = !winning && withBack >= theirs;
+      gain /= N;
+      // virar gasta a carta oculta (não pode mais trocar de lugar); só vale se ajudar
+      const cost = isTrick(back.defId) ? 0.05 : 0.08 + def(back) / 100;
+      const flip = gain > cost;
+      const what = isTrick(back.defId) ? 'o truque' : `a backline (DEF ${def(back)})`;
       return {
         action: { type: 'flip', flip },
-        reason: flip ? `O rival foi a ${theirs}; virando eu chego a ${withBack}.` : winning ? `Já estou na frente (${mine} × ${theirs}).` : `Mesmo virando não alcanço ${theirs}.`,
+        reason: flip ? `Virar ${what} melhora minhas chances neste duelo (+${Math.round(gain * 100)}%).` : now.byPrinciple && !isTrick(back.defId) ? 'O princípio já decidiu; somar DEF não muda nada.' : `Virar ${what} não muda o resultado; guardo oculta.`,
       };
     }
 
+    case 'resolve':
+      return { action: { type: 'resolve' }, reason: '' };
+
+    case 'roundOver':
+      return { action: { type: 'next' }, reason: '' };
+
     case 'swap': {
-      const open = new Set(openColumns(s));
+      // Campos já disputados ficam travados: só reorganiza entre campos livres.
+      // Truques que salvam duelo por princípio vão para trás das frentes mais fracas.
+      const pool = hiddenPool(s, me);
+      const fOf = (col: number) => frontWinProb(P.front[col]!.card, pool);
+      const want = (col: number, c: CardInst | null) => {
+        if (!c) return 0;
+        const f = fOf(col);
+        if (isTrick(c.defId)) return PRINCIPLE_FIXERS.has(c.defId) ? (1 - f) * 6 : 3 + f;
+        return def(c) * (0.4 + f);
+      };
       let best: [number, number] | null = null;
-      let gain = 0;
+      let gainBest = 0.5;
       for (const [a, b] of swapPairs(s, me)) {
-        const [o, x] = open.has(a) && !open.has(b) ? [a, b] : open.has(b) && !open.has(a) ? [b, a] : [-1, -1];
-        if (o < 0) continue;
-        const vo = P.back[o] ? backValue(P.back[o]!.card) : 0;
-        const vx = P.back[x] ? backValue(P.back[x]!.card) : 0;
-        if (vx - vo > gain) {
-          gain = vx - vo;
+        const ca = P.back[a]?.card ?? null;
+        const cb = P.back[b]?.card ?? null;
+        const g = want(a, cb) + want(b, ca) - want(a, ca) - want(b, cb);
+        if (g > gainBest) {
+          gainBest = g;
           best = [a, b];
         }
       }
-      if (best && P.swapsThisTurn < 4) {
-        return { action: { type: 'swap', a: best[0], b: best[1] }, reason: 'Levo uma backline oculta mais útil para um campo ainda livre.' };
+      if (best && P.swapsThisTurn < 3) {
+        return { action: { type: 'swap', a: best[0], b: best[1] }, reason: 'Reorganizo a backline oculta dos campos que ainda vão lutar.' };
       }
       return { action: { type: 'done' }, reason: 'Backline arrumada.' };
     }
@@ -339,6 +362,10 @@ export function describeAction(_s: GameState, a: Action): string {
     case 'swap':
       return `Trocar as backlines ocultas dos campos ${a.a + 1} e ${a.b + 1}`;
     case 'done':
-      return 'Terminar as trocas';
+      return 'Não mover mais a backline';
+    case 'resolve':
+      return 'Apurar o duelo';
+    case 'next':
+      return 'Seguir para a próxima rodada';
   }
 }

@@ -25,6 +25,7 @@ import { rand, rollD6, shuffle } from './rng';
  *                    Personagem virado soma a DEF; truque virado dispara o efeito.
  *                 4) maior total vence o duelo; empate → d6 até desempatar
  *                 5) fim do duelo: cada um decide se troca de lugar as backlines ocultas
+ *                    dos campos que ainda não lutaram (campo disputado fica travado)
  *  Fim da rodada → tudo vai ao cemitério; Realeza REVELADA vai ao exílio.
  *  Vitória      → 15 pontos (no máximo 29 rodadas).
  */
@@ -67,7 +68,11 @@ export interface PlayerState {
   swapsThisTurn: number;
 }
 
-export type Phase = 'coin' | 'place' | 'choose' | 'flip' | 'swap' | 'over';
+/**
+ * 'resolve'   → backlines decididas; falta apurar o duelo (a interface mostra os efeitos antes).
+ * 'roundOver' → alguém fez 3 duelos; a mesa fica à mostra até alguém avançar.
+ */
+export type Phase = 'coin' | 'place' | 'choose' | 'flip' | 'resolve' | 'swap' | 'roundOver' | 'over';
 
 export interface ColumnState {
   resolved: boolean;
@@ -81,6 +86,23 @@ export interface Clash {
   leader: PlayerId;
   flipped: [boolean, boolean];
   stage: 'loser' | 'winner';
+  /** efeitos de truques/equipamentos válidos só neste duelo */
+  mods: DuelMods;
+}
+
+export interface DuelMods {
+  atk: [number, number];
+  def: [number, number];
+  /** Contra-ordem: inverte a vantagem de princípio (duas anulam) */
+  invert: boolean;
+  /** Coroa Falsa: a frontline conta como Realeza */
+  royal: [boolean, boolean];
+  /** Tambor de Guerra: o lado marcado não pode mais virar a backline */
+  noFlip: [boolean, boolean];
+}
+
+export function emptyMods(): DuelMods {
+  return { atk: [0, 0], def: [0, 0], invert: false, royal: [false, false], noFlip: [false, false] };
 }
 
 export interface GameState {
@@ -109,7 +131,9 @@ export type Action =
   | { type: 'choose'; col: number }
   | { type: 'flip'; flip: boolean }
   | { type: 'swap'; a: number; b: number }
-  | { type: 'done' };
+  | { type: 'done' }
+  | { type: 'resolve' }
+  | { type: 'next' };
 
 export type DuelReason = 'principio' | 'valor' | 'dados';
 
@@ -125,10 +149,11 @@ export type GameEvent =
   | { kind: 'choose'; player: PlayerId; col: number }
   | { kind: 'reveal'; col: number; uids: [number, number]; leader: PlayerId; byPrinciple: boolean }
   | { kind: 'flip'; player: PlayerId; col: number; flipped: boolean; uid?: number }
-  | { kind: 'trigger'; player: PlayerId; col: number; defId: string; result: 'trocou' | 'roubou' | 'falhou'; oldUid?: number; newUid?: number; stolenUid?: number; revealedUid?: number }
+  | { kind: 'trigger'; player: PlayerId; col: number; defId: string; result: 'trocou' | 'roubou' | 'falhou' | 'sabotou' | 'bonus'; oldUid?: number; newUid?: number; stolenUid?: number; revealedUid?: number; destroyedUid?: number; text?: string }
   | { kind: 'result'; col: number; winner: PlayerId; totals: [number, number]; reason: DuelReason; dice: [number, number][]; duelWins: [number, number] }
   | { kind: 'swap'; player: PlayerId; a: number; b: number }
   | { kind: 'swapDone'; player: PlayerId; swaps: number }
+  | { kind: 'roundWon'; round: number; winner: PlayerId; points: [number, number]; duelWins: [number, number] }
   | { kind: 'roundEnd'; round: number; winner: PlayerId; points: [number, number]; moved: { player: PlayerId; uid: number; to: 'cemiterio' | 'cemiterio2' | 'exilio' }[] }
   | { kind: 'win'; winner: PlayerId | 'empate'; reason: string };
 
@@ -163,6 +188,7 @@ export function swapPairs(s: GameState, pid: PlayerId): [number, number][] {
   const out: [number, number][] = [];
   for (let a = 0; a < RULES.columns; a++) {
     for (let b = a + 1; b < RULES.columns; b++) {
+      if (s.columns[a]?.resolved || s.columns[b]?.resolved) continue; // campo que já lutou fica travado
       if (!backSwappable(p, a) || !backSwappable(p, b)) continue;
       if (!p.back[a] && !p.back[b]) continue;
       out.push([a, b]);
@@ -255,7 +281,19 @@ export function cloneState(s: GameState): GameState {
     ...s,
     players: [clonePlayer(s.players[0]), clonePlayer(s.players[1])],
     columns: s.columns.map((c) => ({ ...c })),
-    clash: s.clash ? { ...s.clash, flipped: [...s.clash.flipped] as [boolean, boolean] } : null,
+    clash: s.clash
+      ? {
+          ...s.clash,
+          flipped: [...s.clash.flipped] as [boolean, boolean],
+          mods: {
+            atk: [...s.clash.mods.atk] as [number, number],
+            def: [...s.clash.mods.def] as [number, number],
+            invert: s.clash.mods.invert,
+            royal: [...s.clash.mods.royal] as [boolean, boolean],
+            noFlip: [...s.clash.mods.noFlip] as [boolean, boolean],
+          },
+        }
+      : null,
     queue: s.queue.slice(),
   };
 }
@@ -304,25 +342,28 @@ export interface FrontCompare {
   values: [number, number];
 }
 
-/** Compara duas frontlines (princípio primeiro, depois ATK). */
-export function compareFronts(a: CardInst, b: CardInst): FrontCompare {
-  const pa = principleOf(a);
-  const pb = principleOf(b);
-  const aAdv = beats(pa, pb);
-  const bAdv = beats(pb, pa);
-  const va = getDef(a.defId).atk + (PRINCIPLE_MODE === 'bonus' && aAdv ? PRINCIPLE_BONUS : 0);
-  const vb = getDef(b.defId).atk + (PRINCIPLE_MODE === 'bonus' && bAdv ? PRINCIPLE_BONUS : 0);
+/** Compara duas frontlines (princípio primeiro, depois ATK), com os efeitos do duelo. */
+export function compareFronts(a: CardInst, b: CardInst, mods: DuelMods = emptyMods()): FrontCompare {
+  const pa: Principle = mods.royal[0] ? 'realeza' : principleOf(a);
+  const pb: Principle = mods.royal[1] ? 'realeza' : principleOf(b);
+  let aAdv = beats(pa, pb);
+  let bAdv = beats(pb, pa);
+  if (mods.invert) [aAdv, bAdv] = [bAdv, aAdv];
+  const va = getDef(a.defId).atk + mods.atk[0] + (PRINCIPLE_MODE === 'bonus' && aAdv ? PRINCIPLE_BONUS : 0);
+  const vb = getDef(b.defId).atk + mods.atk[1] + (PRINCIPLE_MODE === 'bonus' && bAdv ? PRINCIPLE_BONUS : 0);
   if (PRINCIPLE_MODE === 'dominante' && aAdv !== bAdv) {
     return { leader: aAdv ? 0 : 1, byPrinciple: true, values: [va, vb] };
   }
   return { leader: va > vb ? 0 : vb > va ? 1 : null, byPrinciple: false, values: [va, vb] };
 }
 
-/** DEF somada por um lado: só personagem virado neste duelo, ainda na casa. */
+/** DEF somada por um lado: personagem virado neste duelo (ainda na casa) + equipamentos. */
 function backBonus(s: GameState, pid: PlayerId, col: number): number {
+  if (!s.clash || s.clash.col !== col) return 0;
+  let v = s.clash.mods.def[pid];
   const b = s.players[pid].back[col];
-  if (!s.clash || s.clash.col !== col || !s.clash.flipped[pid] || !b || isTrick(b.card.defId)) return 0;
-  return getDef(b.card.defId).def;
+  if (s.clash.flipped[pid] && b && !isTrick(b.card.defId)) v += getDef(b.card.defId).def;
+  return v;
 }
 
 export interface DuelStanding {
@@ -331,11 +372,12 @@ export interface DuelStanding {
   totals: [number, number];
 }
 
-/** Situação atual do duelo no campo `col` (frontlines + backlines viradas). */
+/** Situação atual do duelo no campo `col` (frontlines, backlines viradas e efeitos). */
 export function duelStanding(s: GameState, col: number): DuelStanding {
   const f0 = s.players[0].front[col]!.card;
   const f1 = s.players[1].front[col]!.card;
-  const cmp = compareFronts(f0, f1);
+  const mods = s.clash && s.clash.col === col ? s.clash.mods : emptyMods();
+  const cmp = compareFronts(f0, f1, mods);
   const totals: [number, number] = [cmp.values[0] + backBonus(s, 0, col), cmp.values[1] + backBonus(s, 1, col)];
   if (cmp.byPrinciple) return { leader: cmp.leader, byPrinciple: true, totals };
   return { leader: totals[0] > totals[1] ? 0 : totals[1] > totals[0] ? 1 : null, byPrinciple: false, totals };
@@ -436,18 +478,35 @@ function applyChoose(s: GameState, col: number, events: GameEvent[]) {
   const cmp = compareFronts(p0.front[col]!.card, p1.front[col]!.card);
   const leader = cmp.leader ?? chooser; // frontlines empatadas: quem escolheu o campo fica à frente
   events.push({ kind: 'reveal', col, uids: [p0.front[col]!.card.uid, p1.front[col]!.card.uid], leader, byPrinciple: cmp.byPrinciple });
-  s.clash = { col, chooser, leader, flipped: [false, false], stage: 'loser' };
+  s.clash = { col, chooser, leader, flipped: [false, false], stage: 'loser', mods: emptyMods() };
   const loser = other(leader);
   if (canFlip(s, loser)) {
     s.phase = 'flip';
     s.actor = loser;
-  } else finishDuel(s, events);
+  } else toResolve(s);
 }
 
 export function canFlip(s: GameState, pid: PlayerId): boolean {
   if (!s.clash) return false;
+  if (s.clash.mods.noFlip[pid]) return false;
   const b = s.players[pid].back[s.clash.col];
   return !!b && !b.revealed;
+}
+
+/** Fim das decisões de backline: o duelo espera a apuração ('resolve'). */
+function toResolve(s: GameState) {
+  s.phase = 'resolve';
+  s.actor = s.clash!.chooser;
+}
+
+/** Vira a backline de `pid` no campo do duelo e dispara o efeito, sem avançar o fluxo. */
+export function doFlip(s: GameState, pid: PlayerId, events: GameEvent[]) {
+  const c = s.clash!;
+  const slot = s.players[pid].back[c.col]!;
+  slot.revealed = true;
+  c.flipped[pid] = true;
+  events.push({ kind: 'flip', player: pid, col: c.col, flipped: true, uid: slot.card.uid });
+  if (isTrick(slot.card.defId)) triggerTrick(s, pid, c.col, slot.card, events);
 }
 
 /** Efeito de um truque/equipamento virado na backline do campo do duelo. */
@@ -478,6 +537,34 @@ function triggerTrick(s: GameState, pid: PlayerId, col: number, card: CardInst, 
       if (target) target.revealed = true; // pescou um truque: fica à mostra e sem efeito
       events.push({ kind: 'trigger', player: pid, col, defId: card.defId, result: 'falhou', revealedUid: target?.card.uid });
     }
+  } else if (card.defId === 't-sabotagem') {
+    const target = op.back[col];
+    if (target) {
+      op.back[col] = null;
+      (isTrick(target.card.defId) ? op.graveTricks : op.graveChars).push(target.card);
+      events.push({ kind: 'trigger', player: pid, col, defId: card.defId, result: 'sabotou', destroyedUid: target.card.uid });
+    } else events.push({ kind: 'trigger', player: pid, col, defId: card.defId, result: 'falhou' });
+  } else {
+    const m = s.clash!.mods;
+    let text = '';
+    if (card.defId === 't-escudo-de-torre') {
+      m.def[pid] += 4;
+      text = '+4 de defesa';
+    } else if (card.defId === 't-lanca-de-cerco') {
+      m.atk[pid] += 3;
+      text = '+3 de ATK';
+    } else if (card.defId === 't-contra-ordem') {
+      m.invert = !m.invert;
+      text = 'vantagem de princípio invertida';
+    } else if (card.defId === 't-coroa-falsa') {
+      m.royal[pid] = true;
+      text = 'frontline conta como Realeza';
+    } else if (card.defId === 't-tambor-de-guerra') {
+      m.atk[pid] += 2;
+      m.noFlip[other(pid)] = true;
+      text = '+2 de ATK e o rival não pode mais virar';
+    }
+    events.push({ kind: 'trigger', player: pid, col, defId: card.defId, result: 'bonus', text });
   }
 }
 
@@ -510,7 +597,7 @@ function finishDuel(s: GameState, events: GameEvent[]) {
     duelWins: [s.players[0].duelWins, s.players[1].duelWins],
   });
 
-  if (s.players[winner].duelWins >= RULES.duelsToWinRound) return endRound(s, winner, events);
+  if (s.players[winner].duelWins >= RULES.duelsToWinRound) return roundOver(s, winner, events);
 
   s.queue = [s.initiative, other(s.initiative)].filter((pid) => swapPairs(s, pid).length > 0);
   if (s.queue.length) {
@@ -519,11 +606,20 @@ function finishDuel(s: GameState, events: GameEvent[]) {
   } else startDuel(s, events);
 }
 
-function endRound(s: GameState, winner: PlayerId, events: GameEvent[]) {
+/** Rodada decidida: marca o ponto e deixa a mesa à mostra até alguém avançar ('next'). */
+function roundOver(s: GameState, winner: PlayerId, events: GameEvent[]) {
   s.players[winner].points++;
   s.lastRoundWinner = winner;
   s.players[0].lastRoundLosses = s.players[1].duelWins;
   s.players[1].lastRoundLosses = s.players[0].duelWins;
+  s.phase = 'roundOver';
+  s.actor = s.initiative;
+  s.queue = [];
+  events.push({ kind: 'roundWon', round: s.round, winner, points: [s.players[0].points, s.players[1].points], duelWins: [s.players[0].duelWins, s.players[1].duelWins] });
+}
+
+function endRound(s: GameState, events: GameEvent[]) {
+  const winner = s.lastRoundWinner!;
   const moved: { player: PlayerId; uid: number; to: 'cemiterio' | 'cemiterio2' | 'exilio' }[] = [];
   for (const pid of [0, 1] as PlayerId[]) {
     const p = s.players[pid];
@@ -575,6 +671,10 @@ export function legalActions(s: GameState): Action[] {
       return openColumns(s).map((col) => ({ type: 'choose', col }) as Action);
     case 'flip':
       return [{ type: 'flip', flip: true }, { type: 'flip', flip: false }];
+    case 'resolve':
+      return [{ type: 'resolve' }];
+    case 'roundOver':
+      return [{ type: 'next' }];
     case 'swap': {
       const out: Action[] = [{ type: 'done' }];
       if (s.players[s.actor].swapsThisTurn < RULES.maxSwapsPerTurn) {
@@ -652,11 +752,7 @@ export function applyAction(s: GameState, a: Action): GameEvent[] {
       const c = s.clash;
       if (a.flip) {
         if (!canFlip(s, pid)) throw new Error('Não há backline oculta neste campo.');
-        const slot = s.players[pid].back[c.col]!;
-        slot.revealed = true;
-        c.flipped[pid] = true;
-        events.push({ kind: 'flip', player: pid, col: c.col, flipped: true, uid: slot.card.uid });
-        if (isTrick(slot.card.defId)) triggerTrick(s, pid, c.col, slot.card, events);
+        doFlip(s, pid, events);
       } else {
         events.push({ kind: 'flip', player: pid, col: c.col, flipped: false });
       }
@@ -664,13 +760,23 @@ export function applyAction(s: GameState, a: Action): GameEvent[] {
       if (c.stage === 'loser' && a.flip && canFlip(s, next)) {
         c.stage = 'winner';
         s.actor = next;
-      } else finishDuel(s, events);
+      } else toResolve(s);
+      break;
+    }
+    case 'resolve': {
+      if (s.phase !== 'resolve') throw new Error('Nada para apurar agora.');
+      finishDuel(s, events);
+      break;
+    }
+    case 'next': {
+      if (s.phase !== 'roundOver') throw new Error('A rodada ainda não acabou.');
+      endRound(s, events);
       break;
     }
     case 'swap': {
       if (s.phase !== 'swap') throw new Error('Fora da fase de trocas.');
       if (!swapPairs(s, pid).some(([x, y]) => (x === a.a && y === a.b) || (x === a.b && y === a.a))) {
-        throw new Error('Só cartas ocultas da backline podem trocar de lugar.');
+        throw new Error('Só backlines ocultas de campos ainda não disputados podem trocar de lugar.');
       }
       const p = s.players[pid];
       [p.back[a.a], p.back[a.b]] = [p.back[a.b], p.back[a.a]];
