@@ -8,7 +8,7 @@ import {
   legalActions,
   openColumns,
   other,
-  requiredBack,
+  maxBack,
   swapPairs,
   type Action,
   type CardInst,
@@ -99,7 +99,8 @@ export function heuristicPlace(s: GameState, pid: PlayerId, r: Rng, jitter = 0):
   const scored = p.hand.map((c) => ({ c, f: frontWinProb(c, pool) + (jitter ? (rnd(r) - 0.5) * jitter : 0), d: def(c) / 7 }));
   scored.sort((a, b) => b.f - 0.5 * b.d - (a.f - 0.5 * a.d));
   const fronts = shuffled(r, scored.slice(0, RULES.columns));
-  const need = requiredBack(p);
+  // backline é opcional; o bot costuma preencher tudo, e nas variações (difícil) às vezes guarda cartas
+  const need = jitter && rnd(r) < 0.25 ? Math.max(0, maxBack(p) - 1 - Math.floor(rnd(r) * 2)) : maxBack(p);
   // truques: Mapa Confuso atrás das frentes fracas, no máximo 1 Vara de Pesca
   const backs: (CardInst | null)[] = Array(RULES.columns).fill(null);
   let placed = 0;
@@ -138,7 +139,7 @@ export function randomPlace(s: GameState, pid: PlayerId, r: Rng): Extract<Action
   const p = s.players[pid];
   const hand = shuffled(r, p.hand);
   const front = hand.slice(0, RULES.columns);
-  const pool = shuffled(r, [...hand.slice(RULES.columns), ...p.trickHand]).slice(0, requiredBack(p));
+  const pool = shuffled(r, [...hand.slice(RULES.columns), ...p.trickHand]).slice(0, Math.floor(rnd(r) * (maxBack(p) + 1)));
   const back: (number | null)[] = pool.map((c) => c.uid);
   while (back.length < RULES.columns) back.push(null);
   return { type: 'place', front: front.map((c) => c.uid), back: shuffled(r, back) };

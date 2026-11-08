@@ -198,3 +198,25 @@ describe('informação oculta', () => {
     expect(d.players[1].front.every((x) => !x!.card.defId.startsWith('t-'))).toBe(true);
   });
 });
+
+describe('regras de distribuição e compra', () => {
+  it('backline é opcional: posso deixar casas vazias e guardar cartas na mão', () => {
+    const s = newGame({ seed: 21 });
+    applyAction(s, { type: 'coin', call: 'cara' });
+    const p = s.players[s.actor];
+    applyAction(s, { type: 'place', front: p.hand.slice(0, 5).map((c) => c.uid), back: [null, null, null, null, null] });
+    expect(p.back.every((x) => x === null)).toBe(true);
+    expect(p.hand).toHaveLength(5);
+  });
+
+  it('compra 1 truque por duelo perdido na rodada anterior', () => {
+    const s = placed(22);
+    const before = s.players.map((p) => p.trickHand.length); // ninguém usou truques na rodada 1
+    for (let guard = 0; s.round === 1 && guard < 50; guard++) quickDuel(s);
+    for (const pid of [0, 1] as PlayerId[]) {
+      const lost = s.players[pid].lastRoundLosses;
+      if (s.lastRoundWinner !== pid) expect(lost).toBe(3); // quem perdeu a rodada perdeu 3 duelos
+      expect(s.players[pid].trickHand.length).toBe(before[pid] + lost);
+    }
+  });
+});

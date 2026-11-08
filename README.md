@@ -19,12 +19,13 @@ npm run sim -- --a dificil --b medio --games 100 --budget 30   # bot × bot
 | Etapa | O que acontece |
 | --- | --- |
 | Moeda | Quem acerta cara/coroa ganha a **iniciativa**. Quem erra compra **1 truque a mais** no início. |
-| Distribuição | Cada jogador coloca cartas **viradas**: 5 personagens na frontline e 5 cartas na backline, que podem ser **personagens ou truques/equipamentos**. |
+| Compra | No início de cada rodada, **1 truque/equipamento por duelo perdido na rodada anterior**. |
+| Distribuição | Cada jogador coloca cartas **viradas**: 5 personagens na frontline (obrigatório) e, **se quiser**, até 5 na backline, que podem ser **personagens ou truques/equipamentos**. O que não for para a mesa fica na mão. |
 | Duelo 1. Dado | Os dois rolam o d6 (empate rola de novo). Quem tirar mais escolhe um campo livre. |
 | Duelo 2. Revelação | As frontlines daquele campo são viradas. **Vantagem de princípio vence.** Sem vantagem (mesmo princípio), ATK × ATK. |
 | Duelo 3. Backline | Quem está perdendo decide se vira a backline do campo. Personagem soma a DEF; truque/equipamento dispara o efeito. Se virar, o outro decide se vira a dele. |
 | Duelo 4. Resultado | Maior total vence o duelo. Empate: d6 até desempatar. O campo fica travado. |
-| Duelo 5. Trocas | Cada jogador pode trocar de lugar as cartas da backline que ainda estão ocultas. |
+| Duelo 5. Mover | Cada jogador decide se troca de lugar as cartas da backline que ainda estão ocultas (ou não move nada). |
 | Rodada | De 3 a 5 duelos: **quem vencer 3 leva a rodada e 1 ponto**. Tudo vai ao cemitério; Realeza **revelada** vai ao exílio (oculta vai ao cemitério). |
 | Vitória | 15 pontos (no máximo 29 rodadas). |
 
@@ -41,7 +42,7 @@ daquele campo. No fim da rodada vão ao cemitério 2.
 ### Decisões provisórias (ajustáveis em `src/config.ts`)
 
 - Decks de 30 personagens e 10 truques; quando acabam, o cemitério volta embaralhado.
-- Truques: 2 na mão no início (+1 para quem perde a moeda), +1 por rodada, máximo 4.
+- Truques: 2 na mão no início da partida (+1 para quem perde a moeda).
 - A cada distribuição a mão é completada até 10 personagens; os que sobram ficam para a próxima.
 - Frontlines empatadas no ATK: quem escolheu o campo fica "à frente" e o outro decide primeiro se vira.
 - Vara de Pesca que encontra um truque: o truque fica revelado e sem efeito.

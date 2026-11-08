@@ -17,7 +17,7 @@ import {
   findCard,
   newGame,
   openColumns,
-  requiredBack,
+  maxBack,
   swapPairs,
   validatePlace,
   type Action,
@@ -41,7 +41,7 @@ const PHASE_PT: Record<GameState['phase'], string> = {
   place: 'Distribuição',
   choose: 'Escolha do campo',
   flip: 'Virar backline?',
-  swap: 'Fim do duelo',
+  swap: 'Mover a backline?',
   over: 'Fim de jogo',
 };
 
@@ -737,9 +737,11 @@ export class App {
         case 'draw':
           this.pushLog(cls(ev.player), `${who(ev.player)} recebeu ${ev.uids.length} personagem(ns).`);
           break;
-        case 'trickDraw':
-          this.pushLog(cls(ev.player), `${who(ev.player)} comprou ${ev.uids.length} truque(s)/equipamento(s)${ev.extra ? ` (${ev.extra} a mais por perder na moeda)` : ''}.`);
+        case 'trickDraw': {
+          const why = ev.round === 1 ? (ev.extra ? ` (${ev.extra} a mais por perder na moeda)` : '') : ` (1 por duelo perdido na rodada anterior)`;
+          this.pushLog(cls(ev.player), `${who(ev.player)} comprou ${ev.uids.length} truque(s)/equipamento(s)${why}.`);
           break;
+        }
         case 'placed':
           this.pushLog(cls(ev.player), `${who(ev.player)} distribuiu as cartas viradas.`);
           break;
@@ -976,11 +978,11 @@ export class App {
     handMe.classList.toggle('locked', !this.myMove());
     handMe.classList.toggle('compact', !placing);
     if (placing) {
-      const need = requiredBack(me);
+      const max = maxBack(me);
       handMe.innerHTML = `
         <div class="hand-group"><div class="hand-label">Personagens · frontline ou backline</div><div class="hand-cards">${cardsOf(me.hand) || '<span class="hand-empty">—</span>'}</div></div>
         <div class="hand-group tricks"><div class="hand-label">Truques e equipamentos · só backline</div><div class="hand-cards">${cardsOf(me.trickHand) || '<span class="hand-empty">—</span>'}</div></div>
-        <div class="hand-need">Frontline: 5 personagens. Backline: ${need} carta(s), personagem ou truque.</div>`;
+        <div class="hand-need">Frontline: 5 personagens (obrigatório). Backline: opcional, de 0 a ${max} carta(s), personagem ou truque. O que não for para a mesa fica na mão.</div>`;
     } else {
       handMe.innerHTML = `<div class="hand-summary">Na sua mão: ${me.hand.length} personagem(ns) e ${me.trickHand.length} truque(s)/equipamento(s). Eles entram na próxima distribuição.</div>
         ${me.hand.length + me.trickHand.length ? `<div class="hand-cards mini">${cardsOf([...me.hand, ...me.trickHand])}</div>` : ''}`;
@@ -1043,7 +1045,9 @@ export class App {
         return `${hint}<button class="btn${hc('flip-yes')}" data-act="flip-yes">${label}</button><button class="btn ghost${hc('flip-no')}" data-act="flip-no">Não virar</button>`;
       }
       case 'swap':
-        return `${hint}<button class="btn${hc('done')}" data-act="done">Pronto</button>`;
+        return s.players[ME].swapsThisTurn
+          ? `${hint}<button class="btn${hc('done')}" data-act="done">Pronto</button>`
+          : `${hint}<span class="chip">Mover backline? Clique em duas casas</span><button class="btn${hc('done')}" data-act="done">Não mover</button>`;
       default:
         return '';
     }
@@ -1113,7 +1117,7 @@ export class App {
           ? 'Você está perdendo este duelo. Virar a backline soma a DEF (personagem) ou dispara o efeito (truque). Se não virar, ela continua oculta e pode trocar de lugar depois.'
           : 'O bot virou a backline. Você pode virar a sua para responder.';
       case 'swap':
-        return 'Fim do duelo: clique em duas backlines ocultas suas para trocar de lugar (pode repetir). Depois clique em Pronto.';
+        return 'Fim do duelo: se quiser, clique em duas backlines ocultas suas para trocar de lugar (pode repetir). Se não quiser mover, clique em “Não mover”.';
       default:
         return '';
     }
@@ -1171,10 +1175,11 @@ function wheelSvg(): string {
 function rulesHtml(): string {
   const principle = PRINCIPLE_MODE === 'dominante' ? 'Vantagem de princípio vence o duelo.' : `Vantagem de princípio soma +${PRINCIPLE_BONUS}.`;
   return `<ul class="rules-list">
-    <li>Distribuição: 5 personagens virados na frontline; na backline, personagens ou truques/equipamentos, também virados.</li>
+    <li>Início da rodada: compre 1 truque por duelo perdido na rodada anterior.</li>
+    <li>Distribuição: 5 personagens virados na frontline; a backline é opcional (personagens ou truques, virados). O resto fica na mão.</li>
     <li>Duelo: d6 → quem tirar mais escolhe o campo → as frontlines são reveladas. ${principle} Sem vantagem: ATK × ATK.</li>
     <li>Quem perde pode virar a backline: personagem soma DEF, truque dispara o efeito. Se virar, o outro pode responder.</li>
-    <li>Empate: d6 até desempatar. Fim do duelo: backlines ocultas podem trocar de lugar.</li>
+    <li>Empate: d6 até desempatar. Fim do duelo: você decide se troca de lugar as backlines ocultas.</li>
     <li>Rodada: quem vencer ${RULES.duelsToWinRound} duelos leva 1 ponto. Tudo vai ao cemitério; Realeza revelada, ao exílio.</li>
     <li>Vence quem fizer ${RULES.pointsToWin} pontos (no máximo ${RULES.maxRounds} rodadas).</li>
   </ul>`;

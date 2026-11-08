@@ -14,7 +14,8 @@ import { rand, rollD6, shuffle } from './rng';
  *
  *  Moeda        → quem acerta ganha a iniciativa; quem erra compra 1 truque a mais.
  *  Rodada       → cada jogador distribui cartas VIRADAS: 5 personagens na frontline
- *                 e 5 cartas na backline (personagens OU truques/equipamentos).
+ *                 e, se quiser, até 5 na backline (personagens OU truques/equipamentos).
+ *                 Começa comprando 1 truque por duelo perdido na rodada anterior.
  *                 Uma rodada tem de 3 a 5 duelos: quem vencer 3 leva a rodada (1 ponto).
  *  Duelo        → 1) os dois rolam o d6; o maior escolhe um campo livre
  *                 2) as frontlines daquele campo são reveladas:
@@ -23,7 +24,7 @@ import { rand, rollD6, shuffle } from './rng';
  *                    se virar, o outro decide se vira a dele.
  *                    Personagem virado soma a DEF; truque virado dispara o efeito.
  *                 4) maior total vence o duelo; empate → d6 até desempatar
- *                 5) fim do duelo: cada um pode trocar de lugar as backlines ocultas
+ *                 5) fim do duelo: cada um decide se troca de lugar as backlines ocultas
  *  Fim da rodada → tudo vai ao cemitério; Realeza REVELADA vai ao exílio.
  *  Vitória      → 15 pontos (no máximo 29 rodadas).
  */
@@ -52,6 +53,8 @@ export interface PlayerState {
   points: number;
   /** duelos vencidos na rodada atual */
   duelWins: number;
+  /** duelos perdidos na rodada anterior (vira compra de truques) */
+  lastRoundLosses: number;
   charDeck: CardInst[];
   hand: CardInst[];
   trickDeck: CardInst[];
@@ -115,7 +118,7 @@ export type GameEvent =
   | { kind: 'round'; round: number }
   | { kind: 'reshuffle'; player: PlayerId; count: number }
   | { kind: 'draw'; player: PlayerId; uids: number[] }
-  | { kind: 'trickDraw'; player: PlayerId; uids: number[]; extra: number }
+  | { kind: 'trickDraw'; player: PlayerId; uids: number[]; extra: number; round: number }
   | { kind: 'placed'; player: PlayerId; tricks: number }
   | { kind: 'duel'; round: number; duel: number; total: number }
   | { kind: 'roll'; rolls: [number, number][]; chooser: PlayerId }
@@ -168,8 +171,8 @@ export function swapPairs(s: GameState, pid: PlayerId): [number, number][] {
   return out;
 }
 
-/** Quantas cartas a backline precisa receber na distribuição. */
-export function requiredBack(p: PlayerState): number {
+/** Máximo de cartas que cabem na backline (ela é opcional: de 0 até este número). */
+export function maxBack(p: PlayerState): number {
   return Math.min(RULES.columns, Math.max(0, p.hand.length - RULES.columns) + p.trickHand.length);
 }
 
@@ -210,6 +213,7 @@ export function newGame(opts: NewGameOptions): GameState {
       deckName: deck.name,
       points: 0,
       duelWins: 0,
+      lastRoundLosses: 0,
       charDeck: chars,
       hand: [],
       trickDeck: tricks,
@@ -371,12 +375,12 @@ function drawTricks(s: GameState, pid: PlayerId, n: number, extra: number, event
     p.trickDeck.push(...shuffle(s, p.graveTricks.splice(0)));
   }
   const uids: number[] = [];
-  for (let i = 0; i < n + extra && p.trickDeck.length && p.trickHand.length < RULES.trickHandMax + extra; i++) {
+  for (let i = 0; i < n + extra && p.trickDeck.length && p.trickHand.length < RULES.trickHandMax; i++) {
     const c = p.trickDeck.pop()!;
     p.trickHand.push(c);
     uids.push(c.uid);
   }
-  if (uids.length) events.push({ kind: 'trickDraw', player: pid, uids, extra });
+  if (uids.length) events.push({ kind: 'trickDraw', player: pid, uids, extra, round: s.round });
 }
 
 function startRound(s: GameState, events: GameEvent[]) {
@@ -392,7 +396,7 @@ function startRound(s: GameState, events: GameEvent[]) {
     if (s.round === 1) {
       const extra = s.coinWinner !== null && pid !== s.coinWinner ? RULES.coinLoserExtraTricks : 0;
       drawTricks(s, pid, RULES.trickHandStart, extra, events);
-    } else drawTricks(s, pid, RULES.trickDrawPerRound, 0, events);
+    } else drawTricks(s, pid, s.players[pid].lastRoundLosses * RULES.trickDrawPerDuelLost, 0, events);
   }
   if (!ok) return endGame(s, events, 'personagens insuficientes');
   s.phase = 'place';
@@ -518,6 +522,8 @@ function finishDuel(s: GameState, events: GameEvent[]) {
 function endRound(s: GameState, winner: PlayerId, events: GameEvent[]) {
   s.players[winner].points++;
   s.lastRoundWinner = winner;
+  s.players[0].lastRoundLosses = s.players[1].duelWins;
+  s.players[1].lastRoundLosses = s.players[0].duelWins;
   const moved: { player: PlayerId; uid: number; to: 'cemiterio' | 'cemiterio2' | 'exilio' }[] = [];
   for (const pid of [0, 1] as PlayerId[]) {
     const p = s.players[pid];
@@ -592,8 +598,7 @@ export function validatePlace(s: GameState, a: Extract<Action, { type: 'place' }
   if (backs.some((u) => !chars.has(u) && !tricks.has(u))) return 'Carta fora da mão.';
   const used = [...a.front, ...backs];
   if (new Set(used).size !== used.length) return 'Carta repetida.';
-  const need = requiredBack(p);
-  if (backs.length !== need) return `Coloque ${need} carta(s) na backline.`;
+  if (backs.length > maxBack(p)) return 'Cartas demais na backline.';
   return null;
 }
 

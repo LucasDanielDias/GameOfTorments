@@ -53,12 +53,14 @@ export const RULES = {
   charsPerRound: 10,
   /** (provisório) Quando o deck acaba, o cemitério 1 é embaralhado de volta. */
   reshuffleGraveyard: true,
-  /** (provisório) Truques/equipamentos: mão inicial, compra por rodada e limite. */
+  /** (provisório) Truques/equipamentos na mão no início da partida. */
   trickHandStart: 2,
   /** Quem perde no cara ou coroa compra este número de truques a mais no início. */
   coinLoserExtraTricks: 1,
-  trickDrawPerRound: 1,
-  trickHandMax: 4,
+  /** No início de cada rodada, compra 1 truque por duelo perdido na rodada anterior. */
+  trickDrawPerDuelLost: 1,
+  /** Limite de segurança da mão de truques. */
+  trickHandMax: 20,
   /** Trocas de backlines ocultas por jogador em cada fim de duelo (limite de segurança). */
   maxSwapsPerTurn: 10,
 };
