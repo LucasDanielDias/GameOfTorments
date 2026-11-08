@@ -2,24 +2,25 @@ import {
   BOT_DELAY_MS,
   DIFFICULTY_LABEL,
   PRINCIPLE_BEATS,
-  PRINCIPLE_BONUS,
   PRINCIPLE_LABEL,
   PRINCIPLE_MODE,
+  PRINCIPLE_BONUS,
   RULES,
   type Difficulty,
   type Principle,
 } from '../config';
-import { createBot, describeAction, type Bot, type BotDecision } from '../ai/bot';
-import { getDef } from '../engine/cards';
+import { createBot, describeAction, heuristicPlace, type Bot, type BotDecision } from '../ai/bot';
+import { getDef, getTrick, isTrick } from '../engine/cards';
 import {
   applyAction,
-  attackTargets,
-  canAttackWith,
-  moveTargets,
+  compareFronts,
+  findCard,
   newGame,
-  other,
-  previewCombat,
-  unitAt,
+  openColumns,
+  sideTotal,
+  swapPairs,
+  trickTargets,
+  validatePlace,
   type Action,
   type CardInst,
   type CoinSide,
@@ -36,17 +37,28 @@ import { loadPrefs, loadStats, savePrefs, saveStats, sleep, sound } from './supp
 const ME: PlayerId = 0;
 const BOT: PlayerId = 1;
 const ROW_PT: Record<Row, string> = { front: 'frontline', back: 'backline' };
+const PHASE_PT: Record<GameState['phase'], string> = {
+  coin: 'Cara ou coroa',
+  place: 'Distribuição',
+  trick: 'Truques',
+  choose: 'Escolha do campo',
+  flip: 'Virar backline?',
+  swap: 'Fim do turno',
+  over: 'Fim de jogo',
+};
 
-type Sel = { kind: 'hand'; uid: number } | { kind: 'unit'; row: Row; col: number } | null;
+type Sel =
+  | { kind: 'hand'; uid: number }
+  | { kind: 'draft'; row: Row; col: number }
+  | { kind: 'trick'; uid: number }
+  | { kind: 'swap'; col: number }
+  | null;
 type PileKind = 'deck' | 'tricks' | 'grave' | 'graveTricks' | 'exile';
+type Draft = { front: (number | null)[]; back: (number | null)[] };
 
 interface LogItem {
   cls: string;
   text: string;
-}
-
-interface HotApi {
-  snapshot?: (fn: () => unknown) => void;
 }
 
 export class App {
@@ -55,6 +67,7 @@ export class App {
   private stats = loadStats();
   private bot!: Bot;
   private sel: Sel = null;
+  private draft: Draft | null = null;
   private busy = false;
   private hint: { d: BotDecision; text: string } | null = null;
   private inspectUid: number | null = null;
@@ -62,7 +75,7 @@ export class App {
   private pulse = new Set<string>();
   private matchId = 0;
   private log: LogItem[] = [];
-  private lastDie = 6;
+  private dice: [number, number] = [6, 6];
   private diceText = '';
   private recorded = false;
   private el: Record<string, HTMLElement> = {};
@@ -74,7 +87,7 @@ export class App {
     this.resize();
     new ResizeObserver(() => this.resize()).observe(this.el.table);
     window.addEventListener('resize', () => this.resize());
-    const hot = (window as unknown as { claude?: { hot?: HotApi } }).claude?.hot;
+    const hot = (window as unknown as { claude?: { hot?: { snapshot?: (fn: () => unknown) => void } } }).claude?.hot;
     hot?.snapshot?.(() => ({ s: this.s, log: this.log }));
   }
 
@@ -102,16 +115,16 @@ export class App {
               <div class="turn-info">
                 <div class="turn-no" id="turn-no"></div>
                 <div class="turn-who" id="turn-who"></div>
-                <div class="chips" id="chips"></div>
+                <div class="clash-line" id="clash-line"></div>
               </div>
               <div class="tokens">
                 <div><div class="coin-mini" id="coin-mini"></div><div class="token-label">Moeda</div></div>
-                <div><div class="die" id="die"></div><div class="token-label">d6</div></div>
+                <div class="dice-pair">
+                  <div><div class="die" id="die-me"></div><div class="token-label">Você</div></div>
+                  <div><div class="die" id="die-bot"></div><div class="token-label">Bot</div></div>
+                </div>
               </div>
-              <div class="actions">
-                <button class="btn ghost" data-act="hint" title="Atalho: H">Dica</button>
-                <button class="btn" data-act="end" id="end-btn" title="Atalho: E">Encerrar turno</button>
-              </div>
+              <div class="actions" id="actions"></div>
             </div>
             <div class="side me" id="side-me" aria-label="Seu lado"></div>
           </div>
@@ -124,7 +137,7 @@ export class App {
             <label class="check"><input type="checkbox" id="explain"> Explicar as jogadas do bot no registro</label>
             <label class="check"><input type="checkbox" id="reduce"> Reduzir animações</label>
           </div>
-          <div class="box wheel"><h2>Princípios</h2>${wheelSvg()}${rulesHtml()}</div>
+          <div class="box wheel"><h2>Regras</h2>${wheelSvg()}${rulesHtml()}</div>
           <div class="box"><h2>Registro</h2><div class="log" id="log" aria-live="polite"></div></div>
         </aside>
       </main>
@@ -132,7 +145,7 @@ export class App {
       <div class="toast" id="toast" hidden></div>
     </div>`;
     const q = (id: string) => this.root.querySelector<HTMLElement>(`#${id}`)!;
-    for (const id of ['app-root', 'table', 'hand-opp', 'hand-me', 'side-opp', 'side-me', 'turn-no', 'turn-who', 'chips', 'coin-mini', 'die', 'dice-readout', 'end-btn', 'inspector', 'coach', 'log', 'overlay-root', 'toast', 'mute-btn']) {
+    for (const id of ['app-root', 'table', 'hand-opp', 'hand-me', 'side-opp', 'side-me', 'turn-no', 'turn-who', 'clash-line', 'coin-mini', 'die-me', 'die-bot', 'dice-readout', 'actions', 'inspector', 'coach', 'log', 'overlay-root', 'toast', 'mute-btn']) {
       this.el[id] = q(id);
     }
     (q('explain') as HTMLInputElement).checked = this.prefs.explain;
@@ -142,12 +155,12 @@ export class App {
 
   private bind() {
     const r = this.root;
-    r.addEventListener('pointerdown', () => sound.unlock(), { once: false });
+    r.addEventListener('pointerdown', () => sound.unlock());
     r.addEventListener('click', (e) => this.onClick(e));
     r.addEventListener('mouseover', (e) => {
       if (!matchMedia('(hover: hover)').matches) return;
       const c = (e.target as HTMLElement).closest<HTMLElement>('[data-uid]');
-      if (c && !c.closest('.pile-grid')) {
+      if (c && !c.closest('.overlay')) {
         const uid = Number(c.dataset.uid);
         if (uid !== this.inspectUid) {
           this.inspectUid = uid;
@@ -170,8 +183,7 @@ export class App {
         if (this.el['overlay-root'].querySelector('[data-dismiss]')) this.closeOverlay();
         this.sel = null;
         this.render();
-      } else if (e.key === 'e' || e.key === 'E') this.endTurn();
-      else if (e.key === 'h' || e.key === 'H') this.askHint();
+      } else if (e.key === 'h' || e.key === 'H') this.askHint();
     });
   }
 
@@ -182,11 +194,7 @@ export class App {
     const pad = narrow ? 6 : 14;
     const availW = table.clientWidth - 2 * pad - 2 - 8 * gap;
     let cw = Math.floor(availW / 9);
-    if (window.innerWidth > 980) {
-      // cabeçalho, faixa central, folgas e mãos: 4 linhas de campo + mão (1.4) + mão do bot (0.7)
-      const availH = window.innerHeight - 340;
-      cw = Math.min(cw, Math.floor(availH / 7.7));
-    }
+    if (window.innerWidth > 980) cw = Math.min(cw, Math.floor((window.innerHeight - 350) / 7.7));
     cw = Math.max(28, Math.min(104, cw));
     this.root.style.setProperty('--cw', `${cw}px`);
     this.root.style.setProperty('--gap', `${gap}px`);
@@ -197,15 +205,16 @@ export class App {
   // ─── Partida ───────────────────────────────────────────────────────────
 
   start(restore?: { s?: GameState; log?: LogItem[] }) {
-    if (restore?.s) {
+    if (restore?.s && 'columns' in restore.s) {
       this.s = restore.s;
       this.log = restore.log ?? [];
       this.matchId++;
       this.bot = createBot({ difficulty: this.prefs.difficulty });
       this.recorded = this.s.phase === 'over';
+      this.prepareDraft();
       this.render();
       if (this.s.phase === 'coin') this.showCoin();
-      else if (this.s.phase === 'main' && this.s.current === BOT) void this.runBot();
+      else void this.runBots();
       return;
     }
     this.newMatch();
@@ -216,6 +225,7 @@ export class App {
     this.s = newGame({ seed: randomSeed(), names: ['Você', 'Bot de Treino'] });
     this.bot = createBot({ difficulty: this.prefs.difficulty });
     this.sel = null;
+    this.draft = null;
     this.hint = null;
     this.inspectUid = null;
     this.log = [];
@@ -228,8 +238,14 @@ export class App {
     this.showCoin();
   }
 
-  private myTurn() {
-    return this.s.phase === 'main' && this.s.current === ME && !this.busy;
+  private myMove() {
+    return this.s.phase !== 'over' && this.s.phase !== 'coin' && this.s.actor === ME && !this.busy;
+  }
+
+  private prepareDraft() {
+    if (this.s.phase === 'place' && this.s.actor === ME) {
+      if (!this.draft) this.draft = { front: Array(RULES.columns).fill(null), back: Array(RULES.columns).fill(null) };
+    } else this.draft = null;
   }
 
   private async perform(a: Action) {
@@ -237,47 +253,68 @@ export class App {
     this.sel = null;
     this.hint = null;
     const id = this.matchId;
-    const events = applyAction(this.s, a);
+    let events: GameEvent[];
+    try {
+      events = applyAction(this.s, a);
+    } catch (err) {
+      this.busy = false;
+      this.toast((err as Error).message);
+      this.render();
+      return;
+    }
     await this.animate(events);
     if (id !== this.matchId) return;
     this.logEvents(events);
     this.busy = false;
+    this.prepareDraft();
     this.render();
     if (this.s.phase === 'over') this.finish();
   }
 
-  private async endTurn() {
-    if (!this.myTurn()) return;
-    await this.perform({ type: 'end' });
-    if (this.s.phase === 'main' && this.s.current === BOT) void this.runBot();
+  private async act(a: Action) {
+    if (!this.myMove()) return;
+    await this.perform(a);
+    void this.runBots();
   }
 
-  private async runBot() {
+  private botRunning = false;
+  private async runBots() {
+    if (this.botRunning) return;
+    this.botRunning = true;
     const id = this.matchId;
-    this.busy = true;
-    this.renderStrip();
-    while (this.s.phase === 'main' && this.s.current === BOT && id === this.matchId) {
-      await sleep(this.prefs.reduceMotion ? 150 : BOT_DELAY_MS);
-      if (id !== this.matchId) return;
-      const d = this.bot.decide(this.s);
-      if (this.prefs.explain && d.action.type !== 'end') {
-        const what = describeAction(this.s, d.action).replace(/^Baixar .*? na/, 'Baixar carta na');
-        this.pushLog('why', `Bot pensou: ${what.charAt(0).toLowerCase()}${what.slice(1)}. ${d.reason}`);
+    try {
+      while (this.s.phase !== 'over' && this.s.phase !== 'coin' && this.s.actor === BOT && id === this.matchId) {
+        this.busy = true;
+        this.renderStrip();
+        await sleep(this.prefs.reduceMotion ? 150 : BOT_DELAY_MS);
+        if (id !== this.matchId) return;
+        const d = this.bot.decide(this.s);
+        if (this.prefs.explain && d.reason && d.action.type !== 'done') {
+          const what = d.action.type === 'place' ? 'distribuir as cartas viradas' : describeAction(this.s, d.action);
+          this.pushLog('why', `Bot pensou: ${what.charAt(0).toLowerCase()}${what.slice(1)}. ${d.reason}`);
+        }
+        await this.perform(d.action);
       }
-      await this.perform(d.action);
-      this.busy = this.s.current === BOT && this.s.phase === 'main';
-    }
-    if (id === this.matchId) {
-      this.busy = false;
-      this.render();
+    } finally {
+      this.botRunning = false;
+      if (id === this.matchId) {
+        this.busy = false;
+        this.prepareDraft();
+        this.render();
+      }
     }
   }
 
   private askHint() {
-    if (!this.myTurn()) return;
-    const helper = createBot({ difficulty: 'dificil', budgetMs: 220 });
+    if (!this.myMove()) return;
+    const helper = createBot({ difficulty: 'dificil', budgetMs: 200 });
     const d = helper.decide(this.s);
-    this.hint = { d, text: describeAction(this.s, d.action) };
+    if (d.action.type === 'place') {
+      this.draft = { front: d.action.front.slice(), back: d.action.back.slice() };
+      this.hint = { d, text: 'Distribuí sua mão como o bot difícil faria. Ajuste o que quiser e confirme' };
+    } else {
+      this.hint = { d, text: describeAction(this.s, d.action) };
+    }
     this.render();
   }
 
@@ -287,8 +324,8 @@ export class App {
     const t = e.target as HTMLElement;
     sound.unlock();
 
-    const act = t.closest<HTMLElement>('[data-act]')?.dataset.act;
-    if (act) return this.onAct(act, t.closest<HTMLElement>('[data-act]')!);
+    const actEl = t.closest<HTMLElement>('[data-act]');
+    if (actEl) return this.onAct(actEl.dataset.act!, actEl);
 
     const diff = t.closest<HTMLElement>('[data-diff]')?.dataset.diff as Difficulty | undefined;
     if (diff) {
@@ -306,29 +343,26 @@ export class App {
       return this.showPile(Number(pid) as PlayerId, kind as PileKind);
     }
 
+    const trickEl = t.closest<HTMLElement>('[data-trick]');
+    if (trickEl) {
+      const uid = Number(trickEl.dataset.trick);
+      this.inspectUid = uid;
+      if (this.myMove() && this.s.phase === 'trick') {
+        const card = this.s.players[ME].trickHand.find((c) => c.uid === uid)!;
+        if (!trickTargets(this.s, ME, card.defId).length) this.toast('Este truque não tem alvo válido agora.');
+        else this.sel = this.sel?.kind === 'trick' && this.sel.uid === uid ? null : { kind: 'trick', uid };
+      } else if (this.myMove()) this.toast('Truques só na fase de truques, antes do dado.');
+      return this.render();
+    }
+
     const handCard = t.closest<HTMLElement>('[data-hand]');
     if (handCard) {
       const uid = Number(handCard.dataset.hand);
       this.inspectUid = uid;
-      if (this.myTurn() && this.s.players[ME].playsLeft > 0) {
+      if (this.myMove() && this.s.phase === 'place') {
         this.sel = this.sel?.kind === 'hand' && this.sel.uid === uid ? null : { kind: 'hand', uid };
-      } else if (this.myTurn()) {
-        this.toast('Você já baixou uma carta neste turno.');
       }
-      this.render();
-      return;
-    }
-
-    const plate = t.closest<HTMLElement>('[data-plate]');
-    if (plate) {
-      const pid = Number(plate.dataset.plate) as PlayerId;
-      if (pid === BOT && this.sel?.kind === 'unit' && this.myTurn()) {
-        const col = this.sel.col;
-        if (attackTargets(this.s, col).some((x) => x.kind === 'player')) {
-          void this.perform({ type: 'attack', col, target: { kind: 'player' } });
-        }
-      }
-      return;
+      return this.render();
     }
 
     const slot = t.closest<HTMLElement>('[data-slot]');
@@ -341,7 +375,7 @@ export class App {
   private onAct(act: string, el: HTMLElement) {
     switch (act) {
       case 'new':
-        if (this.s.phase === 'main' && this.s.turn > 2) return this.confirmNew();
+        if (this.s.phase !== 'over' && this.s.turnTotal > 2) return this.confirmNew();
         return this.newMatch();
       case 'new-confirm':
         return this.newMatch();
@@ -354,61 +388,94 @@ export class App {
         return this.render();
       case 'hint':
         return this.askHint();
-      case 'end':
-        return void this.endTurn();
       case 'coin':
         return void this.flipCoin(el.dataset.call as CoinSide);
-      case 'tricks':
-        return this.toast('Truques e equipamentos chegam na próxima etapa.');
+      case 'auto':
+        if (this.draft) {
+          const a = heuristicPlace(this.s, ME, { rng: randomSeed() });
+          this.draft = { front: a.front.slice(), back: a.back.slice() };
+          this.sel = null;
+          this.render();
+        }
+        return;
+      case 'clear':
+        if (this.draft) this.draft = { front: Array(RULES.columns).fill(null), back: Array(RULES.columns).fill(null) };
+        this.sel = null;
+        return this.render();
+      case 'confirm': {
+        if (!this.draft) return;
+        const a = { type: 'place' as const, front: this.draft.front as number[], back: this.draft.back };
+        const err = this.draft.front.includes(null) ? 'Preencha as 5 casas da frontline.' : validatePlace(this.s, a);
+        if (err) return this.toast(err);
+        this.draft = null;
+        return void this.act(a);
+      }
+      case 'pass':
+        return void this.act({ type: 'pass' });
+      case 'flip-yes':
+        return void this.act({ type: 'flip', flip: true });
+      case 'flip-no':
+        return void this.act({ type: 'flip', flip: false });
+      case 'done':
+        return void this.act({ type: 'done' });
     }
   }
 
   private onSlot(pid: PlayerId, row: Row, col: number) {
-    const unit = unitAt(this.s.players[pid], row, col);
-    if (unit) this.inspectUid = unit.card.uid;
-    if (!this.myTurn()) return this.render();
-
-    if (pid === ME) {
-      if (this.sel?.kind === 'hand' && !unit && this.s.players[ME].playsLeft > 0) {
-        return void this.perform({ type: 'play', uid: this.sel.uid, row, col });
-      }
-      if (this.sel?.kind === 'unit') {
-        const from = this.sel;
-        if (from.row === row && from.col === col) {
-          this.sel = null;
-          return this.render();
-        }
-        if (moveTargets(this.s, from.row, from.col).some((m) => m.row === row && m.col === col)) {
-          return void this.perform({ type: 'move', fromRow: from.row, fromCol: from.col, toRow: row, toCol: col });
-        }
-      }
-      this.sel = unit ? { kind: 'unit', row, col } : null;
-      if (unit && row === 'front' && !canAttackWith(this.s, col) && this.s.players[ME].movesLeft === 0) {
-        this.toast(this.whyCantAttack(col));
-      }
-      return this.render();
+    const s = this.s;
+    const slot = s.players[pid][row][col];
+    if (slot && (pid === ME || slot.revealed)) this.inspectUid = slot.card.uid;
+    if (this.draft && pid === ME) {
+      const uid = this.draft[row][col];
+      if (uid !== null) this.inspectUid = uid;
     }
+    if (!this.myMove()) return this.render();
 
-    // lado do bot: ataque
-    if (this.sel?.kind === 'unit' && this.sel.row === 'front' && unit) {
-      const atkCol = this.sel.col;
-      if (attackTargets(this.s, atkCol).some((x) => x.kind === 'unit' && x.row === row && x.col === col)) {
-        return void this.perform({ type: 'attack', col: atkCol, target: { kind: 'unit', row, col } });
+    switch (s.phase) {
+      case 'place': {
+        if (pid !== ME || !this.draft) break;
+        const here = this.draft[row][col];
+        if (this.sel?.kind === 'hand' && here === null) {
+          this.draft[row][col] = this.sel.uid;
+          this.sel = null;
+        } else if (this.sel?.kind === 'draft') {
+          const from = this.sel;
+          const moving = this.draft[from.row][from.col];
+          this.draft[from.row][from.col] = here;
+          this.draft[row][col] = moving;
+          this.sel = null;
+        } else if (here !== null) {
+          this.sel = { kind: 'draft', row, col };
+        }
+        break;
       }
-      this.toast(this.whyCantAttack(atkCol, row, col));
+      case 'trick': {
+        if (this.sel?.kind !== 'trick') break;
+        const card = s.players[ME].trickHand.find((c) => c.uid === (this.sel as { uid: number }).uid)!;
+        const ok = trickTargets(s, ME, card.defId).some((t) => t.side === pid && t.row === row && t.col === col);
+        if (ok) return void this.act({ type: 'trick', uid: card.uid, target: { side: pid, row, col } });
+        this.toast(getTrick(card.defId).target === 'ownHiddenFront' ? 'Escolha uma frontline sua, oculta, em campo livre.' : 'Escolha uma backline oculta do bot.');
+        break;
+      }
+      case 'choose':
+        if (openColumns(s).includes(col)) return void this.act({ type: 'choose', col });
+        this.toast('Este campo já foi disputado nesta rodada.');
+        break;
+      case 'swap': {
+        if (pid !== ME || row !== 'back') break;
+        const sw = swapPairs(s, ME);
+        if (this.sel?.kind === 'swap') {
+          const a = this.sel.col;
+          if (a === col) this.sel = null;
+          else if (sw.some(([x, y]) => (x === a && y === col) || (x === col && y === a))) {
+            return void this.act({ type: 'swap', a: Math.min(a, col), b: Math.max(a, col) });
+          } else this.toast('Só cartas ocultas da backline trocam de lugar.');
+        } else if (sw.some(([x, y]) => x === col || y === col)) this.sel = { kind: 'swap', col };
+        else this.toast('Esta casa não pode trocar: a carta já foi revelada.');
+        break;
+      }
     }
     this.render();
-  }
-
-  private whyCantAttack(col: number, row?: Row, tcol?: number): string {
-    const u = this.s.players[ME].front[col];
-    if (!u) return 'Só cartas na frontline atacam.';
-    if (RULES.firstTurnNoAttack && this.s.turn === 1) return 'Ninguém ataca no primeiro turno da partida.';
-    if (u.attacked) return 'Esta carta já atacou neste turno.';
-    if (RULES.summoningSickness && u.enteredTurn === this.s.turn) return 'Carta recém-baixada só ataca no próximo turno.';
-    if (row === 'back') return 'A backline só pode ser atacada quando a frente daquela coluna estiver vazia.';
-    if (tcol !== undefined && Math.abs(tcol - col) > RULES.attackReach) return 'Fora de alcance: a frontline ataca a coluna da frente e as vizinhas.';
-    return 'Sem alvo válido.';
   }
 
   // ─── Animações ─────────────────────────────────────────────────────────
@@ -420,86 +487,88 @@ export class App {
   private async animate(events: GameEvent[]) {
     const fast = this.prefs.reduceMotion;
     const wait = (ms: number) => sleep(fast ? Math.min(ms, 60) : ms);
+    let rerender = false;
     for (const ev of events) {
       switch (ev.kind) {
-        case 'play':
-          this.fx.set(ev.uid, 'enter');
-          sound.play('card');
+        case 'roll':
+          await this.rollDice(ev.rolls);
+          this.diceText = `d6: você ${ev.rolls.at(-1)![0]} × ${ev.rolls.at(-1)![1]} bot${ev.rolls.length > 1 ? ' (após empate)' : ''} · ${ev.chooser === ME ? 'você escolhe o campo' : 'o bot escolhe o campo'}`;
           break;
-        case 'move':
-          this.fx.set(ev.uid, 'enter');
-          if (ev.swappedUid) this.fx.set(ev.swappedUid, 'enter');
+        case 'reveal':
+          ev.uids.forEach((u) => this.fx.set(u, 'flip-in'));
+          sound.play('card');
+          rerender = true;
+          break;
+        case 'flip':
+          if (ev.flipped && ev.uid) {
+            this.fx.set(ev.uid, 'flip-in');
+            sound.play('card');
+            this.render();
+            await wait(500);
+          }
+          break;
+        case 'result':
+          if (rerender) {
+            this.render();
+            rerender = false;
+            await wait(700);
+          }
+          if (ev.dice.length) {
+            await this.rollDice(ev.dice);
+            this.diceText = `Empate em ${ev.totals[0]}: d6 ${ev.dice.map(([a, b]) => `${a}×${b}`).join(', ')}`;
+          }
+          sound.play(ev.winner === ME ? 'coin' : 'hit');
+          this.pulse.add(`plate:${ev.winner}`);
+          break;
+        case 'trick':
+          sound.play('move');
+          if (ev.newUid) this.fx.set(ev.newUid, 'enter');
+          if (ev.player === BOT) {
+            const name = getTrick(ev.defId).name;
+            const stolen = ev.revealedUid ? findCard(this.s, ev.revealedUid) : null;
+            this.toast(ev.result === 'roubou' && stolen ? `O bot usou ${name} e roubou ${getDef(stolen.defId).name} da sua backline!` : `O bot usou ${name}.`);
+          }
+          break;
+        case 'swap':
           sound.play('move');
           break;
-        case 'attack': {
-          const att = this.q(`.side [data-uid="${ev.combat.attackerUid}"]`);
-          const tgt = ev.combat.defenderUid !== null
-            ? this.q(`.side [data-uid="${ev.combat.defenderUid}"]`)
-            : this.q(`[data-plate="${other(ev.player)}"]`);
-          if (att && tgt && !fast) {
-            const a = att.getBoundingClientRect();
-            const b = tgt.getBoundingClientRect();
-            const dx = (b.left + b.width / 2 - (a.left + a.width / 2)) * 0.6;
-            const dy = (b.top + b.height / 2 - (a.top + a.height / 2)) * 0.6;
-            att.style.zIndex = '20';
-            att.style.position = 'relative';
-            await att.animate(
-              [{ transform: 'none' }, { transform: `translate(${dx}px, ${dy}px) scale(1.06)`, offset: 0.55 }, { transform: 'none' }],
-              { duration: 420, easing: 'cubic-bezier(.3,.7,.3,1)' },
-            ).finished.catch(() => undefined);
-          }
-          sound.play(ev.combat.winner === 'direct' ? 'direct' : 'hit');
-          tgt?.classList.add(ev.combat.winner === 'direct' ? 'hurt' : 'hit');
-          if (ev.combat.dice.length) await this.rollDice(ev.combat.dice, ev.player);
-          else this.diceText = '';
-          await wait(160);
-          break;
-        }
-        case 'destroy': {
-          const el = this.q(`.side [data-uid="${ev.uid}"]`);
-          el?.classList.add('dying');
+        case 'roundEnd':
+          this.render();
+          await wait(500);
           sound.play('break');
-          this.pulse.add(`${ev.owner}:${ev.to === 'exilio' ? 'exile' : 'grave'}`);
-          await wait(430);
+          this.pulse.add(`${ME}:grave`).add(`${BOT}:grave`);
           break;
-        }
-        case 'damage':
-          this.q(`[data-plate="${ev.player}"]`)?.classList.add('hurt');
-          await wait(250);
+        case 'placed':
+          if (ev.player === BOT) sound.play('card');
           break;
         case 'turn':
-          if (ev.player === ME) sound.play('turn');
-          break;
-        case 'draw':
-          if (ev.player === ME) this.fx.set(ev.uid, 'enter');
+          if (this.s.actor === ME) sound.play('turn');
           break;
       }
     }
   }
 
-  private async rollDice(dice: [number, number][], attacker: PlayerId) {
+  private async rollDice(rolls: [number, number][]) {
     sound.play('dice');
-    const die = this.el.die;
-    const fast = this.prefs.reduceMotion;
-    for (const [a, d] of dice) {
-      if (!fast) {
-        die.classList.add('rolling');
+    const a = this.el['die-me'];
+    const b = this.el['die-bot'];
+    for (const [x, y] of rolls) {
+      if (!this.prefs.reduceMotion) {
+        a.classList.add('rolling');
+        b.classList.add('rolling');
         for (let i = 0; i < 6; i++) {
-          die.innerHTML = dieSvg(1 + Math.floor(Math.random() * 6));
-          await sleep(60);
+          a.innerHTML = dieSvg(1 + Math.floor(Math.random() * 6));
+          b.innerHTML = dieSvg(1 + Math.floor(Math.random() * 6));
+          await sleep(55);
         }
-        die.classList.remove('rolling');
+        a.classList.remove('rolling');
+        b.classList.remove('rolling');
       }
-      die.innerHTML = dieSvg(a);
-      await sleep(fast ? 50 : 280);
-      die.innerHTML = dieSvg(d);
-      await sleep(fast ? 50 : 280);
+      a.innerHTML = dieSvg(x);
+      b.innerHTML = dieSvg(y);
+      this.dice = [x, y];
+      await sleep(this.prefs.reduceMotion ? 40 : 350);
     }
-    const [a, d] = dice[dice.length - 1];
-    this.lastDie = d;
-    const who = (p: PlayerId) => (p === ME ? 'você' : 'bot');
-    this.diceText = `Empate decidido no d6 · ${who(attacker)} ${a} × ${d} ${who(other(attacker))}`;
-    this.el['dice-readout'].textContent = this.diceText;
   }
 
   // ─── Moeda ─────────────────────────────────────────────────────────────
@@ -507,13 +576,13 @@ export class App {
   private showCoin() {
     this.openOverlay(`
       <div class="modal" role="dialog" aria-label="Cara ou coroa">
-        <div class="eyebrow">Quem começa?</div>
+        <div class="eyebrow">Iniciativa</div>
         <h2>Cara ou coroa</h2>
         <div class="coin3d" id="coin3d"><div class="coin-inner">
           <div class="coin-face">${coinSvg('cara')}</div>
           <div class="coin-face tails">${coinSvg('coroa')}</div>
         </div></div>
-        <p id="coin-text">Escolha um lado. Se acertar, você começa. Quem começa não compra nem ataca no primeiro turno.</p>
+        <p id="coin-text">Quem acertar ganha a iniciativa: distribui as cartas e usa truques primeiro. Depois, a cada campo perdido, a iniciativa passa para quem perdeu.</p>
         <div class="row" id="coin-buttons">
           <button class="btn" data-act="coin" data-call="cara">Cara</button>
           <button class="btn" data-act="coin" data-call="coroa">Coroa</button>
@@ -534,21 +603,20 @@ export class App {
     sound.play('coin');
     await sleep(this.prefs.reduceMotion ? 100 : 1450);
     if (id !== this.matchId) return;
-    const starts = ev.starter === ME ? 'Você começa.' : 'O bot começa.';
-    this.q('#coin-text')!.textContent = `Você pediu ${call}, deu ${ev.result}. ${starts}`;
-    this.q('#coin-buttons')!.innerHTML = `<button class="btn" data-act="close">Para a mesa</button>`;
+    this.q('#coin-text')!.textContent = `Você pediu ${call}, deu ${ev.result}. ${ev.winner === ME ? 'A iniciativa é sua.' : 'A iniciativa é do bot.'}`;
+    this.q('#coin-buttons')!.innerHTML = `<button class="btn" id="coin-go">Para a mesa</button>`;
     this.logEvents(events);
     this.busy = false;
+    this.prepareDraft();
     this.render();
-    const go = () => {
+    this.q('#coin-go')!.addEventListener('click', () => {
       if (id !== this.matchId) return;
       this.closeOverlay();
-      if (this.s.current === BOT) void this.runBot();
-    };
-    this.q('#coin-buttons button')!.addEventListener('click', go, { once: true });
+      void this.runBots();
+    }, { once: true });
   }
 
-  // ─── Fim de jogo ───────────────────────────────────────────────────────
+  // ─── Fim de jogo e janelas ─────────────────────────────────────────────
 
   private finish() {
     if (this.recorded) return;
@@ -561,12 +629,11 @@ export class App {
     sound.play(w === ME ? 'win' : 'lose');
     const [me, bot] = this.s.players;
     const title = w === ME ? 'Vitória' : w === BOT ? 'Derrota' : 'Empate';
-    const sub = w === ME ? 'O campo é seu.' : w === BOT ? 'O bot levou esta.' : 'Ninguém cedeu.';
     this.openOverlay(`
       <div class="modal" role="dialog" aria-label="${title}">
-        <div class="eyebrow">Fim da partida · turno ${this.s.turn}</div>
+        <div class="eyebrow">Fim da partida · ${this.s.turnTotal} turnos</div>
         <h2>${title}</h2>
-        <p>${sub} Vida final: você ${Math.max(0, me.life)} × ${Math.max(0, bot.life)} bot.
+        <p>Placar final: você ${me.points} × ${bot.points} bot.
         No nível ${DIFFICULTY_LABEL[this.prefs.difficulty]}: ${rec.wins} vitória(s), ${rec.losses} derrota(s).</p>
         <div class="row">
           <button class="btn" data-act="new-confirm">Jogar de novo</button>
@@ -591,8 +658,8 @@ export class App {
   private showPile(pid: PlayerId, kind: PileKind) {
     const p = this.s.players[pid];
     const owner = pid === ME ? 'Seu' : 'Do bot';
-    if (kind === 'tricks') return this.toast('Deck de truques e equipamentos: as regras chegam na próxima etapa.');
-    if (kind === 'deck') return this.toast(`${owner === 'Seu' ? 'Seu deck' : 'Deck do bot'} de personagens: ${p.charDeck.length} carta(s).`);
+    if (kind === 'deck') return this.toast(`${pid === ME ? 'Seu deck' : 'Deck do bot'} de personagens: ${p.charDeck.length} carta(s).`);
+    if (kind === 'tricks') return this.toast(`${pid === ME ? 'Seu deck' : 'Deck do bot'} de truques e equipamentos: ${p.trickDeck.length} carta(s).`);
     const list: CardInst[] = kind === 'grave' ? p.graveChars : kind === 'exile' ? p.exile : p.graveTricks;
     const name = kind === 'grave' ? 'Cemitério de personagens' : kind === 'exile' ? 'Exílio' : 'Cemitério de truques';
     this.openOverlay(`
@@ -606,7 +673,7 @@ export class App {
 
   private openOverlay(html: string, dismissable = true) {
     const root = this.el['overlay-root'];
-    root.innerHTML = `<div class="overlay" ${dismissable ? 'data-backdrop' : ''}>${html}</div>`;
+    root.innerHTML = `<div class="overlay">${html}</div>`;
     const ov = root.firstElementChild as HTMLElement;
     if (dismissable) ov.addEventListener('click', (e) => { if (e.target === ov) this.closeOverlay(); });
     ov.querySelector<HTMLElement>('button')?.focus();
@@ -622,64 +689,89 @@ export class App {
     t.textContent = msg;
     t.hidden = false;
     clearTimeout(this.toastTimer);
-    this.toastTimer = window.setTimeout(() => (t.hidden = true), 2600);
+    this.toastTimer = window.setTimeout(() => (t.hidden = true), 2800);
   }
 
   // ─── Registro ──────────────────────────────────────────────────────────
 
   private pushLog(cls: string, text: string) {
     this.log.push({ cls, text });
-    if (this.log.length > 300) this.log.splice(0, this.log.length - 300);
+    if (this.log.length > 400) this.log.splice(0, this.log.length - 400);
   }
 
   private logEvents(events: GameEvent[]) {
-    const nm = (uid: number) => {
-      for (const p of this.s.players) {
-        const all = [...p.hand, ...p.graveChars, ...p.exile, ...p.front.map((u) => u?.card), ...p.back.map((u) => u?.card)];
-        const c = all.find((x) => x && x.uid === uid);
-        if (c) return getDef(c.defId).name;
-      }
-      return 'carta';
+    const nm = (uid: number | undefined) => {
+      const c = uid ? findCard(this.s, uid) : null;
+      if (!c) return 'carta';
+      return isTrick(c.defId) ? getTrick(c.defId).name : getDef(c.defId).name;
     };
     const who = (p: PlayerId) => (p === ME ? 'Você' : 'O bot');
     const cls = (p: PlayerId) => (p === ME ? 'me' : 'bot');
     for (const ev of events) {
       switch (ev.kind) {
         case 'coin':
-          this.pushLog('big', `Moeda: você pediu ${ev.call}, deu ${ev.result}. ${ev.starter === ME ? 'Você começa' : 'O bot começa'}.`);
+          this.pushLog('big', `Moeda: você pediu ${ev.call}, deu ${ev.result}. Iniciativa ${ev.winner === ME ? 'sua' : 'do bot'}.`);
           break;
-        case 'turn':
-          this.pushLog('turn-mark', `Turno ${ev.turn} · ${ev.player === ME ? 'sua vez' : 'vez do bot'}`);
+        case 'round':
+          this.pushLog('turn-mark', `Rodada ${ev.round}`);
+          break;
+        case 'reshuffle':
+          this.pushLog(cls(ev.player), `${who(ev.player)} embaralhou ${ev.count} carta(s) do cemitério de volta no deck.`);
           break;
         case 'draw':
-          this.pushLog(cls(ev.player), ev.player === ME ? `Você comprou ${nm(ev.uid)}.` : 'O bot comprou uma carta.');
+          this.pushLog(cls(ev.player), `${who(ev.player)} recebeu ${ev.uids.length} personagem(ns).`);
           break;
-        case 'handFull':
-          this.pushLog(cls(ev.player), `${who(ev.player)} está com a mão cheia e não comprou.`);
+        case 'trickDraw':
+          this.pushLog(cls(ev.player), `${who(ev.player)} comprou ${ev.uids.length} truque(s)/equipamento(s).`);
           break;
-        case 'play':
-          this.pushLog(cls(ev.player), `${who(ev.player)} baixou ${nm(ev.uid)} na ${ROW_PT[ev.row]}, coluna ${ev.col + 1}.`);
+        case 'placed':
+          this.pushLog(cls(ev.player), `${who(ev.player)} distribuiu as cartas viradas.`);
           break;
-        case 'move':
-          this.pushLog(cls(ev.player), `${who(ev.player)} moveu ${nm(ev.uid)} para a ${ROW_PT[ev.toRow]}, coluna ${ev.toCol + 1}${ev.swappedUid ? ` (troca com ${nm(ev.swappedUid)})` : ''}.`);
+        case 'turn':
+          this.pushLog('turn-mark', `Turno ${ev.turn}/5 · confronto ${ev.total} de até ${RULES.maxTurns}`);
           break;
-        case 'attack': {
-          const c = ev.combat;
-          if (c.winner === 'direct') {
-            this.pushLog(cls(ev.player), `${nm(c.attackerUid)} atacou diretamente.`);
-          } else {
-            const a = `${c.attValue}${c.attBonus ? `+${c.attBonus}` : ''}`;
-            const d = `${c.defValue}${c.defBonus ? `+${c.defBonus}` : ''}`;
-            const res = c.reason === 'dados' ? `empate, d6 ${c.dice.map(([x, y]) => `${x}×${y}`).join(', ')}` : c.reason === 'dominante' ? 'vantagem dominante' : `${a} × ${d}`;
-            this.pushLog(cls(ev.player), `${nm(c.attackerUid)} atacou ${nm(c.defenderUid!)} (${res}): ${c.winner === 'att' ? 'atacante vence' : 'defensor resiste'}.`);
-          }
+        case 'pass':
+          this.pushLog(cls(ev.player), `${who(ev.player)} passou os truques.`);
+          break;
+        case 'trick': {
+          const name = getTrick(ev.defId).name;
+          const where = `${ROW_PT[ev.target.row]} ${ev.target.side === ev.player ? 'própria' : 'rival'}, campo ${ev.target.col + 1}`;
+          const res = ev.result === 'roubou' ? `: roubou ${nm(ev.revealedUid)}` : ev.result === 'trocou' ? ': carta trocada pelo topo do deck' : ': não era personagem';
+          this.pushLog(cls(ev.player), `${who(ev.player)} usou ${name} (${where})${res}.`);
           break;
         }
-        case 'destroy':
-          this.pushLog(cls(ev.owner), `${nm(ev.uid)} foi para ${ev.to === 'exilio' ? 'o exílio' : 'o cemitério'}.`);
+        case 'roll': {
+          const [a, b] = ev.rolls.at(-1)!;
+          this.pushLog('', `d6: você ${a} × ${b} bot${ev.rolls.length > 1 ? ' (após empate)' : ''}.`);
           break;
-        case 'damage':
-          this.pushLog(cls(ev.player), `${who(ev.player)} sofreu ${ev.amount} de dano (vida ${Math.max(0, ev.life)}).`);
+        }
+        case 'choose':
+          this.pushLog(cls(ev.player), `${who(ev.player)} escolheu o campo ${ev.col + 1}.`);
+          break;
+        case 'reveal': {
+          const [a, b] = ev.uids.map((u) => findCard(this.s, u)!);
+          const pa = PRINCIPLE_LABEL[getDef(a.defId).principle];
+          const pb = PRINCIPLE_LABEL[getDef(b.defId).principle];
+          this.pushLog('', `Revelação: ${getDef(a.defId).name} (${pa}, ATK ${getDef(a.defId).atk}) × ${getDef(b.defId).name} (${pb}, ATK ${getDef(b.defId).atk})${ev.byPrinciple ? ` → vantagem de princípio para ${ev.leader === ME ? 'você' : 'o bot'}` : ''}.`);
+          break;
+        }
+        case 'flip':
+          this.pushLog(cls(ev.player), ev.flipped ? `${who(ev.player)} virou a backline: ${nm(ev.uid)} (DEF ${ev.uid ? getDef(findCard(this.s, ev.uid)!.defId).def : '?'}).` : `${who(ev.player)} não virou a backline.`);
+          break;
+        case 'result': {
+          const why = ev.reason === 'principio' ? 'princípio' : ev.reason === 'dados' ? `empate em ${ev.totals[0]}, decidido no d6` : `${ev.totals[0]} × ${ev.totals[1]}`;
+          this.pushLog('big', `Campo ${ev.col + 1}: ponto ${ev.winner === ME ? 'seu' : 'do bot'} (${why}).`);
+          break;
+        }
+        case 'point':
+          break;
+        case 'swap':
+          this.pushLog(cls(ev.player), `${who(ev.player)} trocou de lugar as backlines dos campos ${ev.a + 1} e ${ev.b + 1}.`);
+          break;
+        case 'swapDone':
+          break;
+        case 'roundEnd':
+          this.pushLog('', `Fim da rodada ${ev.round}: todas as cartas da mesa foram ao cemitério${ev.moved.some((m) => m.to === 'exilio') ? ' (Realeza ao exílio)' : ''}.`);
           break;
         case 'win':
           this.pushLog('big', ev.winner === 'empate' ? `Empate (${ev.reason}).` : `${ev.winner === ME ? 'Você venceu' : 'O bot venceu'} (${ev.reason}).`);
@@ -705,50 +797,51 @@ export class App {
     this.pulse.clear();
   }
 
+  /** Conjunto de destaques (chaves "pid:row:col") para a fase atual. */
   private highlights() {
-    const h = {
-      play: new Set<string>(),
-      attack: new Set<string>(),
-      move: new Set<string>(),
-      attackPlayer: false,
-      hinted: new Set<string>(),
-      hintPlate: false,
-    };
-    if (this.myTurn() && this.sel) {
-      if (this.sel.kind === 'hand') {
-        this.s.players[ME].front.forEach((u, c) => !u && h.play.add(`front:${c}`));
-        this.s.players[ME].back.forEach((u, c) => !u && h.play.add(`back:${c}`));
-      } else {
-        if (this.sel.row === 'front') {
-          for (const t of attackTargets(this.s, this.sel.col)) {
-            if (t.kind === 'player') h.attackPlayer = true;
-            else h.attack.add(`${t.row}:${t.col}`);
-          }
+    const s = this.s;
+    const h = { play: new Set<string>(), choose: new Set<number>(), trick: new Set<string>(), swap: new Set<string>(), hinted: new Set<string>() };
+    if (this.myMove()) {
+      if (s.phase === 'place' && this.sel?.kind === 'hand' && this.draft) {
+        for (const row of ['front', 'back'] as Row[]) this.draft[row].forEach((u, c) => u === null && h.play.add(`${ME}:${row}:${c}`));
+      }
+      if (s.phase === 'choose') openColumns(s).forEach((c) => h.choose.add(c));
+      if (s.phase === 'trick' && this.sel?.kind === 'trick') {
+        const card = s.players[ME].trickHand.find((c) => c.uid === (this.sel as { uid: number }).uid);
+        if (card) for (const t of trickTargets(s, ME, card.defId)) h.trick.add(`${t.side}:${t.row}:${t.col}`);
+      }
+      if (s.phase === 'swap') {
+        for (const [a, b] of swapPairs(s, ME)) {
+          h.swap.add(`${ME}:back:${a}`);
+          h.swap.add(`${ME}:back:${b}`);
         }
-        for (const m of moveTargets(this.s, this.sel.row, this.sel.col)) h.move.add(`${m.row}:${m.col}`);
       }
     }
-    if (this.hint && this.myTurn()) {
+    if (this.hint && this.myMove()) {
       const a = this.hint.d.action;
-      if (a.type === 'play') {
-        h.hinted.add(`hand:${a.uid}`);
-        h.hinted.add(`${ME}:${a.row}:${a.col}`);
-      } else if (a.type === 'move') {
-        h.hinted.add(`${ME}:${a.fromRow}:${a.fromCol}`);
-        h.hinted.add(`${ME}:${a.toRow}:${a.toCol}`);
-      } else if (a.type === 'attack') {
-        h.hinted.add(`${ME}:front:${a.col}`);
-        if (a.target.kind === 'player') h.hintPlate = true;
-        else h.hinted.add(`${BOT}:${a.target.row}:${a.target.col}`);
+      if (a.type === 'choose') ['front', 'back'].forEach((r) => [ME, BOT].forEach((p) => h.hinted.add(`${p}:${r}:${a.col}`)));
+      if (a.type === 'trick') {
+        h.hinted.add(`trick:${a.uid}`);
+        h.hinted.add(`${a.target.side}:${a.target.row}:${a.target.col}`);
       }
+      if (a.type === 'swap') {
+        h.hinted.add(`${ME}:back:${a.a}`);
+        h.hinted.add(`${ME}:back:${a.b}`);
+      }
+      if (a.type === 'flip') h.hinted.add(a.flip ? 'act:flip-yes' : 'act:flip-no');
+      if (a.type === 'pass') h.hinted.add('act:pass');
+      if (a.type === 'done') h.hinted.add('act:done');
+      if (a.type === 'place') h.hinted.add('act:confirm');
     }
     return h;
   }
 
   private renderSides() {
+    const s = this.s;
     const h = this.highlights();
+    const clashCol = s.clash && (s.phase === 'flip' || s.phase === 'swap' || this.busy) ? s.clash.col : -1;
     for (const pid of [ME, BOT] as PlayerId[]) {
-      const p = this.s.players[pid];
+      const p = s.players[pid];
       const mine = pid === ME;
       const rowLine: Record<Row, number> = mine ? { front: 1, back: 2 } : { back: 1, front: 2 };
       const cells: string[] = [];
@@ -756,68 +849,75 @@ export class App {
         cells.push(`<div style="grid-column:${col};grid-row:${span ? '1 / span 2' : row};min-width:0">${html}</div>`);
 
       for (const row of ['front', 'back'] as Row[]) {
-        for (let c = 0; c < RULES.boardColumns; c++) {
-          const u = p[row][c];
-          const key = `${row}:${c}`;
+        for (let c = 0; c < RULES.columns; c++) {
+          const key = `${pid}:${row}:${c}`;
+          const colState = s.columns[c];
           const slotCls = ['slot', row];
-          if (mine && h.play.has(key)) slotCls.push('can-play');
-          if (mine && h.move.has(key) && !u) slotCls.push('target-move');
-          if (h.hinted.has(`${pid}:${key}`) && !u) slotCls.push('hinted');
+          if (h.play.has(key)) slotCls.push('can-play');
+          if (h.choose.has(c)) slotCls.push('can-choose');
+          if (h.trick.has(key)) slotCls.push('target-trick');
+          if (h.swap.has(key)) slotCls.push('can-swap');
+          if (this.sel?.kind === 'swap' && mine && row === 'back' && this.sel.col === c) slotCls.push('selected');
+          if (this.sel?.kind === 'draft' && mine && this.sel.row === row && this.sel.col === c) slotCls.push('selected');
+          if (h.hinted.has(key)) slotCls.push('hinted');
+          if (colState?.resolved) slotCls.push('locked');
+          if (c === clashCol) slotCls.push('clash');
+
           let inner = `<span class="slot-label">${row === 'front' ? 'Front' : 'Back'}<br>${c + 1}</span>`;
-          if (u) {
-            const cls: string[] = [];
-            const fx = this.fx.get(u.card.uid);
-            if (fx) cls.push(fx);
-            const sick = RULES.summoningSickness && u.enteredTurn === this.s.turn && this.s.current === pid;
-            if (u.attacked) cls.push('spent');
-            if (mine && row === 'front' && this.myTurn() && canAttackWith(this.s, c)) cls.push('ready');
-            if (mine && this.sel?.kind === 'unit' && this.sel.row === row && this.sel.col === c) cls.push('selected');
-            if (!mine && h.attack.has(key)) cls.push('target-attack');
-            if (mine && h.move.has(key)) cls.push('target-move');
-            if (h.hinted.has(`${pid}:${key}`)) cls.push('hinted');
-            inner = cardHtml(u.card, { row, cls, badge: sick ? ICON.hourglass : undefined });
+          const draftUid = mine && this.draft ? this.draft[row][c] : null;
+          if (draftUid !== null) {
+            const card = s.players[ME].hand.find((x) => x.uid === draftUid);
+            if (card) inner = cardHtml(card, { row, cls: ['concealed'], badge: ICON.eyeOff });
+          } else {
+            const x = p[row][c];
+            if (x) {
+              const cls: string[] = [];
+              const fx = this.fx.get(x.card.uid);
+              if (fx) cls.push(fx);
+              if (x.revealed) inner = cardHtml(x.card, { row, cls });
+              else if (mine) inner = cardHtml(x.card, { row, cls: [...cls, 'concealed'], badge: ICON.eyeOff });
+              else inner = backHtml(cls.join(' '));
+            }
           }
-          at(3 + c, rowLine[row], `<div class="${slotCls.join(' ')}" data-slot="${pid}:${row}:${c}" aria-label="${ROW_PT[row]} ${c + 1}">${inner}</div>`);
+          let mark = '';
+          if (row === 'front' && colState?.resolved) {
+            mark = `<span class="col-mark ${colState.winner === pid ? 'won' : 'lost'}">${colState.winner === pid ? '+1' : ''}</span>`;
+          }
+          at(3 + c, rowLine[row], `<div class="${slotCls.join(' ')}" data-slot="${pid}:${row}:${c}" aria-label="${ROW_PT[row]} ${c + 1}">${inner}${mark}</div>`);
         }
       }
 
-      const plate = this.plateHtml(pid, !mine && h.attackPlayer, !mine && h.hintPlate);
-      const deck = this.pileHtml(pid, 'deck');
-      const tricks = this.pileHtml(pid, 'tricks');
-      const grave = this.pileHtml(pid, 'grave');
-      const graveT = this.pileHtml(pid, 'graveTricks');
-      const exile = this.pileHtml(pid, 'exile');
+      const plate = this.plateHtml(pid);
       if (mine) {
         at(1, 1, plate, true);
-        at(2, 1, tricks);
-        at(8, 1, deck);
-        at(8, 2, exile);
-        at(9, 1, grave);
-        at(9, 2, graveT);
+        at(2, 1, this.pileHtml(pid, 'tricks'));
+        at(8, 1, this.pileHtml(pid, 'deck'));
+        at(8, 2, this.pileHtml(pid, 'exile'));
+        at(9, 1, this.pileHtml(pid, 'grave'));
+        at(9, 2, this.pileHtml(pid, 'graveTricks'));
       } else {
-        at(1, 1, graveT);
-        at(1, 2, grave);
-        at(2, 1, exile);
-        at(2, 2, deck);
-        at(8, 2, tricks);
+        at(1, 1, this.pileHtml(pid, 'graveTricks'));
+        at(1, 2, this.pileHtml(pid, 'grave'));
+        at(2, 1, this.pileHtml(pid, 'exile'));
+        at(2, 2, this.pileHtml(pid, 'deck'));
+        at(8, 2, this.pileHtml(pid, 'tricks'));
         at(9, 1, plate, true);
       }
       this.el[mine ? 'side-me' : 'side-opp'].innerHTML = cells.join('');
     }
   }
 
-  private plateHtml(pid: PlayerId, target: boolean, hinted: boolean) {
+  private plateHtml(pid: PlayerId) {
     const p = this.s.players[pid];
-    const pct = Math.max(0, Math.min(100, (p.life / RULES.startingLife) * 100));
+    const pct = Math.min(100, (p.points / RULES.pointsToWin) * 100);
     const cls = ['plate'];
-    if (target) cls.push('target-attack');
-    if (hinted) cls.push('hinted');
+    if (this.pulse.has(`plate:${pid}`)) cls.push('scored');
     return `<div class="${cls.join(' ')}" data-plate="${pid}" style="height:100%">
       <div class="who">${pid === ME ? 'Você' : 'Bot'}</div>
-      <div class="life">${Math.max(0, p.life)}</div>
-      <div class="life-label">Vida</div>
+      <div class="life">${p.points}</div>
+      <div class="life-label">de ${RULES.pointsToWin} pts</div>
       <div class="life-bar"><i style="width:${pct}%"></i></div>
-      <div class="meta">Mão ${p.hand.length}<br>Deck ${p.charDeck.length}</div>
+      <div class="meta">Truques ${p.trickHand.length}<br>Deck ${p.charDeck.length}</div>
     </div>`;
   }
 
@@ -829,10 +929,8 @@ export class App {
       case 'deck':
         return `<button class="pile stack${pulse}" data-pile="${pid}:deck" aria-label="Deck de personagens: ${p.charDeck.length}">${backs(p.charDeck.length)}<span class="count">${p.charDeck.length}</span><span class="pile-name">Personagens</span></button>`;
       case 'tricks':
-        return `<button class="pile stack" data-pile="${pid}:tricks" aria-label="Deck de truques e equipamentos">${backs(p.trickDeck)}<span class="soon">em breve</span><span class="count">${p.trickDeck}</span><span class="pile-name">Truques/Equip.</span></button>`;
-      case 'grave':
-      case 'graveTricks':
-      case 'exile': {
+        return `<button class="pile stack" data-pile="${pid}:tricks" aria-label="Deck de truques e equipamentos: ${p.trickDeck.length}">${backs(p.trickDeck.length)}<span class="count">${p.trickDeck.length}</span><span class="pile-name">Truques</span></button>`;
+      default: {
         const list = kind === 'grave' ? p.graveChars : kind === 'exile' ? p.exile : p.graveTricks;
         const top = list[list.length - 1];
         const label = kind === 'grave' ? 'Cemitério 1' : kind === 'exile' ? 'Exílio' : 'Cemitério 2';
@@ -843,65 +941,120 @@ export class App {
   }
 
   private renderHands() {
+    const s = this.s;
     const h = this.highlights();
-    const me = this.s.players[ME];
+    const me = s.players[ME];
+    const inDraft = new Set(this.draft ? [...this.draft.front, ...this.draft.back].filter((x): x is number => x !== null) : []);
+    const chars = me.hand.filter((c) => !inDraft.has(c.uid));
     const handMe = this.el['hand-me'];
-    handMe.classList.toggle('locked', !this.myTurn());
-    handMe.innerHTML = me.hand.length
-      ? me.hand
-          .map((c) => {
-            const cls: string[] = [];
-            if (this.sel?.kind === 'hand' && this.sel.uid === c.uid) cls.push('selected');
-            if (h.hinted.has(`hand:${c.uid}`)) cls.push('hinted');
-            const fx = this.fx.get(c.uid);
-            if (fx) cls.push(fx);
-            return cardHtml(c, { cls, attrs: `data-hand="${c.uid}" tabindex="0" role="button"` });
-          })
-          .join('')
-      : '<span class="hand-empty">Mão vazia</span>';
-    const opp = this.s.players[BOT];
-    this.el['hand-opp'].innerHTML = opp.hand.map(() => backHtml()).join('') || '<span class="hand-empty">Bot sem cartas na mão</span>';
+    handMe.classList.toggle('locked', !this.myMove());
+    const charHtml = chars
+      .map((c) => {
+        const cls: string[] = [];
+        if (this.sel?.kind === 'hand' && this.sel.uid === c.uid) cls.push('selected');
+        return cardHtml(c, { cls, attrs: `data-hand="${c.uid}" tabindex="0" role="button"` });
+      })
+      .join('');
+    const trickHtml = me.trickHand
+      .map((c) => {
+        const cls: string[] = [];
+        if (this.sel?.kind === 'trick' && this.sel.uid === c.uid) cls.push('selected');
+        if (h.hinted.has(`trick:${c.uid}`)) cls.push('hinted');
+        if (this.myMove() && s.phase === 'trick' && trickTargets(s, ME, c.defId).length) cls.push('usable');
+        return cardHtml(c, { cls, attrs: `data-trick="${c.uid}" tabindex="0" role="button"` });
+      })
+      .join('');
+    const charLabel = s.phase === 'place' && s.actor === ME ? 'Personagens para distribuir' : 'Personagens na mão';
+    handMe.innerHTML = `
+      <div class="hand-group"><div class="hand-label">${charLabel}</div><div class="hand-cards">${charHtml || '<span class="hand-empty">—</span>'}</div></div>
+      <div class="hand-group tricks"><div class="hand-label">Truques e equipamentos</div><div class="hand-cards">${trickHtml || '<span class="hand-empty">—</span>'}</div></div>`;
+    const opp = s.players[BOT];
+    this.el['hand-opp'].innerHTML = `${opp.hand.map(() => backHtml()).join('')}${opp.trickHand.map(() => backHtml('trick-back')).join('')}<span class="opp-hand-note">Bot: ${opp.hand.length} personagem(ns), ${opp.trickHand.length} truque(s) na mão</span>`;
   }
 
   private renderStrip() {
     const s = this.s;
-    const me = s.players[ME];
-    this.el['turn-no'].textContent = s.phase === 'coin' ? 'Preparação' : `Turno ${s.turn} de até ${RULES.maxTurns}`;
+    this.el['turn-no'].textContent =
+      s.phase === 'coin' ? 'Preparação' : `Rodada ${s.round} · Turno ${Math.max(1, s.turnInRound)}/5 · Confronto ${Math.max(1, s.turnTotal)} de até ${RULES.maxTurns}`;
     const who = this.el['turn-who'];
     who.classList.remove('thinking');
-    if (s.phase === 'coin') who.textContent = 'Cara ou coroa';
-    else if (s.phase === 'over') who.textContent = s.winner === ME ? 'Vitória' : s.winner === BOT ? 'Derrota' : 'Empate';
-    else if (s.current === ME) who.textContent = 'Sua vez';
-    else {
-      who.textContent = 'Bot pensando';
+    if (s.phase === 'over') who.textContent = s.winner === ME ? 'Vitória' : s.winner === BOT ? 'Derrota' : 'Empate';
+    else if (s.phase === 'coin') who.textContent = 'Cara ou coroa';
+    else if (s.actor === BOT) {
+      who.textContent = `${PHASE_PT[s.phase]} · bot pensando`;
       who.classList.add('thinking');
+    } else who.textContent = `${PHASE_PT[s.phase]} · sua vez`;
+
+    // linha do confronto atual
+    let clash = '';
+    if (s.clash) {
+      const c = s.clash.col;
+      const f0 = s.players[ME].front[c];
+      const f1 = s.players[BOT].front[c];
+      if (f0?.revealed && f1?.revealed) {
+        const cmp = compareFronts(f0.card, f1.card);
+        if (cmp.byPrinciple) clash = `Campo ${c + 1}: vantagem de princípio para ${cmp.leader === ME ? 'você' : 'o bot'}`;
+        else clash = `Campo ${c + 1}: você ${sideTotal(s, ME, c)} × ${sideTotal(s, BOT, c)} bot`;
+      }
     }
-    const showChips = s.phase === 'main' && s.current === ME;
-    const noAtk = RULES.firstTurnNoAttack && s.turn === 1;
-    this.el.chips.innerHTML = showChips
-      ? `<span class="chip${me.playsLeft ? '' : ' off'}">Baixar ${me.playsLeft}/${RULES.playsPerTurn}</span>
-         <span class="chip${me.movesLeft ? '' : ' off'}">Mover ${me.movesLeft}/${RULES.movesPerTurn}</span>
-         <span class="chip${noAtk ? ' off' : ''}">Atacar</span>`
-      : '';
-    this.el['coin-mini'].innerHTML = coinSvg(s.starter === null ? 'cara' : s.starter === ME ? 'cara' : 'coroa');
-    this.el['coin-mini'].title = s.starter === null ? 'A moeda decide quem começa' : `Começou: ${s.starter === ME ? 'você' : 'bot'}`;
-    if (!this.el.die.classList.contains('rolling')) this.el.die.innerHTML = dieSvg(this.lastDie);
+    this.el['clash-line'].textContent = clash;
+
+    this.el['coin-mini'].innerHTML = coinSvg(s.coinWinner === null || s.coinWinner === ME ? 'cara' : 'coroa');
+    this.el['coin-mini'].title = s.coinWinner === null ? 'A moeda decide a iniciativa' : `Iniciativa agora: ${s.initiative === ME ? 'você' : 'bot'}`;
+    if (!this.el['die-me'].classList.contains('rolling')) {
+      this.el['die-me'].innerHTML = dieSvg(this.dice[0]);
+      this.el['die-bot'].innerHTML = dieSvg(this.dice[1]);
+    }
     this.el['dice-readout'].textContent = this.diceText;
-    (this.el['end-btn'] as HTMLButtonElement).disabled = !this.myTurn();
-    this.root.querySelectorAll<HTMLButtonElement>('[data-act="hint"]').forEach((b) => (b.disabled = !this.myTurn()));
+    this.el.actions.innerHTML = this.actionButtons();
   }
 
-  private findVisible(uid: number): { card: CardInst; row?: Row; owner: PlayerId } | null {
-    for (const pid of [ME, BOT] as PlayerId[]) {
-      const p = this.s.players[pid];
-      for (const row of ['front', 'back'] as Row[]) {
-        const u = p[row].find((x) => x?.card.uid === uid);
-        if (u) return { card: u.card, row, owner: pid };
+  private actionButtons(): string {
+    const s = this.s;
+    const h = this.highlights();
+    const hc = (k: string) => (h.hinted.has(`act:${k}`) ? ' hinted' : '');
+    if (!this.myMove()) return '';
+    const hint = `<button class="btn ghost" data-act="hint" title="Atalho: H">Dica</button>`;
+    switch (s.phase) {
+      case 'place': {
+        const ready = this.draft && !this.draft.front.includes(null) && validatePlace(s, { type: 'place', front: this.draft.front as number[], back: this.draft.back }) === null;
+        return `${hint}<button class="btn ghost" data-act="auto">Distribuir automático</button><button class="btn ghost" data-act="clear">Limpar</button><button class="btn${hc('confirm')}" data-act="confirm" ${ready ? '' : 'disabled'}>Confirmar</button>`;
       }
-      const pools = pid === ME ? [p.hand, p.graveChars, p.exile] : [p.graveChars, p.exile];
+      case 'trick':
+        return `${hint}<button class="btn${hc('pass')}" data-act="pass">Passar</button>`;
+      case 'choose':
+        return `${hint}<span class="chip">Clique num campo livre</span>`;
+      case 'flip': {
+        const c = s.clash!;
+        const back = s.players[ME].back[c.col]!.card;
+        return `${hint}<button class="btn${hc('flip-yes')}" data-act="flip-yes">Virar (+DEF ${getDef(back.defId).def})</button><button class="btn ghost${hc('flip-no')}" data-act="flip-no">Não virar</button>`;
+      }
+      case 'swap':
+        return `${hint}<button class="btn${hc('done')}" data-act="done">Pronto</button>`;
+      default:
+        return '';
+    }
+  }
+
+  private findVisible(uid: number): { card: CardInst; row?: Row } | null {
+    const s = this.s;
+    if (this.draft) {
+      const c = s.players[ME].hand.find((x) => x.uid === uid);
+      if (c) {
+        const row = this.draft.front.includes(uid) ? 'front' : this.draft.back.includes(uid) ? 'back' : undefined;
+        return { card: c, row };
+      }
+    }
+    for (const pid of [ME, BOT] as PlayerId[]) {
+      const p = s.players[pid];
+      for (const row of ['front', 'back'] as Row[]) {
+        const x = p[row].find((y) => y?.card.uid === uid);
+        if (x && (pid === ME || x.revealed)) return { card: x.card, row };
+      }
+      const pools = pid === ME ? [p.hand, p.trickHand, p.graveChars, p.graveTricks, p.exile] : [p.graveChars, p.graveTricks, p.exile];
       for (const list of pools) {
         const c = list.find((x) => x.uid === uid);
-        if (c) return { card: c, owner: pid };
+        if (c) return { card: c };
       }
     }
     return null;
@@ -914,43 +1067,58 @@ export class App {
       box.innerHTML = `<div class="placeholder">Passe o mouse ou toque numa carta para ver os detalhes.</div>`;
       return;
     }
+    if (isTrick(found.card.defId)) {
+      const t = getTrick(found.card.defId);
+      box.innerHTML = `${cardHtml(found.card, { big: true })}<div class="details"><b>${t.kind === 'truque' ? 'Truque' : 'Equipamento'}.</b> Use na fase de truques, antes do dado (1 por turno). Depois de usado, vai para o cemitério 2.</div>`;
+      return;
+    }
     const d = getDef(found.card.defId);
     const beatsList = PRINCIPLE_BEATS[d.principle].map((x) => PRINCIPLE_LABEL[x]).join(', ');
     const losesTo = (Object.keys(PRINCIPLE_BEATS) as Principle[]).filter((k) => PRINCIPLE_BEATS[k].includes(d.principle)).map((x) => PRINCIPLE_LABEL[x]);
-    const where = found.row ? `Em campo na <b>${ROW_PT[found.row]}</b>: usa ${found.row === 'front' ? `ATK ${d.atk}` : `DEF ${d.def}`}.` : `Na frontline usa ATK ${d.atk}; na backline, DEF ${d.def}.`;
-    let preview = '';
-    if (this.sel?.kind === 'unit' && this.sel.row === 'front' && found.owner === BOT && found.row && this.myTurn()) {
-      const att = this.s.players[ME].front[this.sel.col];
-      if (att) {
-        const p = previewCombat(att.card, found.card, found.row);
-        const odds = p.dominant ? (p.dominant === 'att' ? 'vence por dominância' : 'perde por dominância') : p.pAttWins === 1 ? 'vitória certa' : p.pAttWins === 0 ? 'derrota certa' : '50% no d6';
-        const tCol = this.s.players[BOT][found.row].findIndex((u) => u?.card.uid === found.card.uid);
-        const reach = attackTargets(this.s, this.sel.col).some((t) => t.kind === 'unit' && t.row === found.row && t.col === tCol);
-        preview = `<div class="preview">Seu ${getDef(att.card.defId).name}: ${p.attValue}${p.attBonus ? `+${p.attBonus}` : ''} × ${p.defValue}${p.defBonus ? `+${p.defBonus}` : ''} → <b>${odds}</b>${reach ? '' : ' (fora de alcance)'}</div>`;
-      }
-    }
     box.innerHTML = `${cardHtml(found.card, { big: true, row: found.row })}
       <div class="details">
-        <b>${PRINCIPLE_LABEL[d.principle]}</b>${beatsList ? ` vence ${beatsList}` : ''}${losesTo.length ? `; perde para ${losesTo.join(', ')}` : ''}.
-        ${d.principle === 'realeza' ? ' Ao ser derrotada, vai para o <b>exílio</b>.' : ''}<br>${where}
-        ${preview}
+        <b>${PRINCIPLE_LABEL[d.principle]}</b> vence ${beatsList}${losesTo.length ? `; perde para ${losesTo.join(', ')}` : ''}.
+        ${d.principle === 'realeza' ? ' No fim da rodada vai para o <b>exílio</b>.' : ''}<br>
+        Na frontline disputa com ATK ${d.atk}. Na backline, se virada, soma DEF ${d.def}.
       </div>`;
   }
 
   private renderCoach() {
     const s = this.s;
     const rec = this.stats[this.prefs.difficulty];
-    let tip = '';
-    if (s.phase === 'coin') tip = 'Escolha cara ou coroa para decidir quem começa.';
+    let tip: string;
+    if (s.phase === 'coin') tip = 'Escolha cara ou coroa para decidir a iniciativa.';
     else if (s.phase === 'over') tip = 'Partida encerrada. Clique em “Nova partida” para jogar de novo.';
-    else if (s.current === BOT) tip = 'O bot está jogando. Acompanhe o registro abaixo.';
-    else if (this.sel?.kind === 'hand') tip = 'Agora clique numa casa vazia. Frontline usa o ATK; backline usa a DEF e protege a coluna.';
-    else if (this.sel?.kind === 'unit') tip = this.sel.row === 'front' ? 'Alvos em vermelho podem ser atacados. Casas tracejadas em azul aceitam movimento.' : 'Cartas na backline não atacam, mas podem se mover (tracejado azul).';
-    else if (s.players[ME].playsLeft > 0 && s.players[ME].hand.length) tip = 'Selecione uma carta da mão para baixar, ou uma carta em campo para atacar ou mover.';
-    else tip = 'Ataque com as cartas contornadas ou encerre o turno (tecla E).';
+    else if (s.actor === BOT) tip = 'O bot está decidindo. Acompanhe o registro abaixo.';
+    else
+      switch (s.phase) {
+        case 'place':
+          tip = this.sel?.kind === 'hand'
+            ? 'Agora clique numa casa vazia do seu lado.'
+            : 'Clique numa carta da mão e depois numa casa. Frente: o ATK disputa o campo. Trás: a DEF soma se você virar. Clicar numa carta já posta e depois noutra casa troca as duas.';
+          break;
+        case 'trick':
+          tip = this.sel?.kind === 'trick' ? 'Clique no alvo destacado em azul.' : 'Clique num truque contornado para usar (1 por turno) ou passe.';
+          break;
+        case 'choose':
+          tip = 'Você venceu no d6: clique num campo livre. As duas frontlines dele serão reveladas.';
+          break;
+        case 'flip': {
+          const c = s.clash!;
+          tip = c.stage === 'loser'
+            ? 'Você está perdendo este campo. Virar a backline soma a DEF dela. Se não virar, ela continua oculta e pode trocar de lugar depois.'
+            : 'O bot virou a backline. Você pode virar a sua para somar a DEF.';
+          break;
+        }
+        case 'swap':
+          tip = 'Fim do turno: clique em duas backlines ocultas suas para trocar de lugar (pode repetir). Depois clique em Pronto.';
+          break;
+        default:
+          tip = '';
+      }
     const hint = this.hint ? `<p class="hint-text"><b>Sugestão:</b> ${this.hint.text}.<br><small>${this.hint.d.reason}</small></p>` : '';
     this.el.coach.innerHTML = `<p>${tip}</p>${hint}
-      <div class="row"><button class="btn ghost" data-act="hint" ${this.myTurn() ? '' : 'disabled'}>Pedir dica ao bot</button></div>
+      <div class="row"><button class="btn ghost" data-act="hint" ${this.myMove() ? '' : 'disabled'}>Pedir dica ao bot</button></div>
       <div class="stats-line">Contra o bot ${DIFFICULTY_LABEL[this.prefs.difficulty]}: ${rec.wins} V · ${rec.losses} D</div>`;
   }
 
@@ -966,8 +1134,7 @@ export class App {
 function coinSvg(side: CoinSide): string {
   const mark =
     side === 'cara'
-      ? // rosto: sol com olhos fechados
-        `<circle cx="50" cy="48" r="16" class="mark"/><path class="mark" d="M43 46q3 3 6 0M51 46q3 3 6 0M44 55q6 5 12 0"/>${Array.from({ length: 8 }, (_, i) => {
+      ? `<circle cx="50" cy="48" r="16" class="mark"/><path class="mark" d="M43 46q3 3 6 0M51 46q3 3 6 0M44 55q6 5 12 0"/>${Array.from({ length: 8 }, (_, i) => {
           const a = (i * Math.PI) / 4;
           return `<line class="mark" x1="${50 + Math.cos(a) * 21}" y1="${48 + Math.sin(a) * 21}" x2="${50 + Math.cos(a) * 26}" y2="${48 + Math.sin(a) * 26}"/>`;
         }).join('')}`
@@ -993,12 +1160,13 @@ function wheelSvg(): string {
 }
 
 function rulesHtml(): string {
-  const bonus = PRINCIPLE_MODE === 'bonus' ? `Vantagem de princípio soma +${PRINCIPLE_BONUS}.` : 'Vantagem de princípio vence direto.';
+  const principle = PRINCIPLE_MODE === 'dominante' ? 'Vantagem de princípio vence o campo direto.' : `Vantagem de princípio soma +${PRINCIPLE_BONUS}.`;
   return `<ul class="rules-list">
-    <li>Baixe ${RULES.playsPerTurn} personagem por turno; mova ${RULES.movesPerTurn} carta (front ↔ back ou casa vizinha).</li>
-    <li>Frontline usa ATK e ataca a coluna da frente e as vizinhas. Backline usa DEF e protege a coluna.</li>
-    <li>A backline só é atacada com a frente da coluna vazia. Coluna toda vazia: dano direto na vida.</li>
-    <li>${bonus} Empate: d6 decide.</li>
-    <li>Vida inicial ${RULES.startingLife}. Zere a do rival para vencer.</li>
+    <li>Cada rodada: 10 personagens virados (5 na frente, 5 atrás) e 5 turnos, um por campo.</li>
+    <li>Turno: truques (1 cada) → d6 → quem tirar mais escolhe o campo → as frontlines são reveladas.</li>
+    <li>${principle} Sem vantagem: ATK × ATK. Quem perde pode virar a backline (soma DEF); aí o outro pode virar a dele.</li>
+    <li>Empate: d6 até desempatar. Cada campo vencido vale 1 ponto.</li>
+    <li>Fim do turno: backlines ainda ocultas podem trocar de lugar. Fim da rodada: tudo ao cemitério.</li>
+    <li>Vence quem fizer ${RULES.pointsToWin} pontos (no máximo ${RULES.maxTurns} turnos).</li>
   </ul>`;
 }

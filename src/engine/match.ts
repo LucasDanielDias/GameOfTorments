@@ -16,7 +16,7 @@ export function playMatch(
   ];
   let guard = 0;
   while (s.phase !== 'over' && guard++ < 5000) {
-    const d = bots[s.current].decide(s);
+    const d = bots[s.actor].decide(s);
     applyAction(s, d.action);
   }
   return s;

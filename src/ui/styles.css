@@ -708,3 +708,75 @@ button:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--ink-3)
 .table > .dice-readout { color: var(--ink-3); font-style: italic; }
 .card.lg .art { flex-basis: 43%; }
 .card.lg .name { font-size: 0.98em; }
+
+/* ─── Fases novas: distribuição, confronto, trocas ──────── */
+.slot.can-choose { cursor: pointer; border: 1px solid var(--gold); background: rgba(197, 169, 115, 0.16); }
+.slot.can-choose:hover { background: rgba(197, 169, 115, 0.38); }
+.slot.target-trick { outline: 3px solid var(--move); outline-offset: 2px; cursor: crosshair; }
+.slot.can-swap { outline: 2px dashed var(--move); outline-offset: 2px; cursor: pointer; }
+.slot.selected { outline: 3px solid var(--ink); outline-offset: 3px; }
+.slot.locked { background: rgba(26, 22, 20, 0.07); }
+.slot.locked .card:not(.concealed) .face { filter: saturate(0.75); }
+.slot.clash { box-shadow: 0 0 0 3px var(--gold); }
+.slot .col-mark {
+  position: absolute;
+  z-index: 4;
+  left: 50%;
+  bottom: -9px;
+  transform: translateX(-50%);
+  min-width: 26px;
+  padding: 1px 6px;
+  font-family: var(--f-display);
+  font-weight: 900;
+  font-size: 12px;
+  text-align: center;
+  pointer-events: none;
+}
+.side.opp .slot .col-mark { bottom: auto; top: -9px; }
+.slot .col-mark.won { background: var(--ink); color: var(--gold); }
+.slot .col-mark.lost { display: none; }
+
+/* sua carta virada para baixo: você vê, o bot não */
+.card.concealed .face { filter: brightness(0.86) saturate(0.7); }
+.card.concealed::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(135deg, rgba(26, 22, 20, 0.08) 0 6px, transparent 6px 12px);
+  pointer-events: none;
+}
+.card.concealed .badge { left: calc(var(--cw) * 0.05); right: auto; }
+.card.flip-in { animation: flipIn 0.55s ease-out; }
+@keyframes flipIn { 0% { transform: rotateY(90deg) scale(1.05); } 100% { transform: none; } }
+
+.plate.scored { animation: scored 0.9s ease-out; }
+@keyframes scored { 0% { background: var(--gold); transform: scale(1.06); } 100% { background: var(--card-paper); transform: none; } }
+
+.dice-pair { display: flex; gap: 10px; }
+.clash-line { margin-top: 6px; font-size: 12.5px; color: var(--gold-2); font-variant-numeric: tabular-nums; min-height: 1em; }
+.strip .chip { white-space: nowrap; }
+.strip .btn.hinted, .btn.hinted { animation: hint 1.1s ease-in-out infinite; }
+
+/* mão: personagens + truques */
+.hand.me { gap: 22px; flex-wrap: wrap; align-items: flex-start; }
+.hand-group { display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
+.hand-label { font-size: 9.5px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--ink-3); }
+.hand-cards { display: flex; justify-content: center; padding-top: 10px; max-width: 100%; }
+.hand.me .hand-group.tricks { padding-left: 18px; border-left: 1px solid var(--line); }
+.hand.opp { align-items: center; gap: 0; flex-wrap: wrap; }
+.opp-hand-note { font-size: 10.5px; color: var(--ink-3); margin-left: 16px; letter-spacing: 0.06em; }
+.card.trick-back { filter: hue-rotate(-12deg) brightness(0.85); }
+
+/* cartas de truque / equipamento */
+.card.trick { background: var(--leather-2); --pc-ink: var(--leather-2); }
+.card.trick.k-equipamento { background: #5d4a2c; --pc-ink: #5d4a2c; }
+.card.trick .face { border-color: var(--gold); }
+.card.trick .art { flex-basis: 50%; background: var(--paper-2); color: var(--ink-2); }
+.card.trick .art::after { display: none; }
+.card.trick .ptag { color: var(--ink-3); }
+.card.trick.usable { cursor: pointer; }
+.card.trick.usable::before { content: ''; position: absolute; inset: -3px; border: 1px solid var(--move); pointer-events: none; }
+.tiny .hand.me .hand-group.tricks { padding-left: 0; border-left: 0; }
+/* a faixa central não deve alargar a mesa: a largura vem da grade de casas */
+.strip { width: 0; min-width: 100%; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); }
+.strip .turn-who { text-wrap: balance; }

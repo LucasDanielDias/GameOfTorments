@@ -6,8 +6,27 @@ import {
   RULES,
   type Principle,
 } from '../config';
-import { DECKS, TRICK_DECK_PLACEHOLDER_SIZE, getDef, type DeckKey } from './cards';
+import { DECKS, TRICK_DECK, getDef, getTrick, isTrick, type DeckKey } from './cards';
 import { rand, rollD6, shuffle } from './rng';
+
+/*
+ * ESTRUTURA DA PARTIDA
+ *
+ *  Moeda       → quem acerta ganha a iniciativa (age primeiro nos truques e trocas).
+ *  Rodada      → cada jogador recebe 10 personagens e distribui VIRADOS:
+ *                5 na frontline e 5 na backline. Uma rodada tem 5 turnos.
+ *  Turno       → 1) truques: cada um pode usar 1 truque/equipamento (ou passar)
+ *                2) d6: ambos rolam; o maior escolhe um campo (coluna) ainda livre
+ *                3) as duas frontlines daquele campo são reveladas e comparadas:
+ *                   vantagem de princípio vence direto; senão, ATK × ATK
+ *                4) quem está perdendo decide se vira a backline (soma a DEF);
+ *                   se virar, o vencedor decide se vira a dele
+ *                5) maior total leva 1 ponto; empate → d6 até desempatar
+ *                6) o campo fica travado; cada um pode trocar de lugar
+ *                   as cartas da backline que ainda estão ocultas
+ *  Fim da rodada → todas as cartas da mesa vão ao cemitério (Realeza: exílio).
+ *  Vitória     → 15 pontos (no máximo 29 turnos).
+ */
 
 // ─── Tipos ────────────────────────────────────────────────────────────────
 
@@ -18,78 +37,104 @@ export type CoinSide = 'cara' | 'coroa';
 export interface CardInst {
   uid: number;
   defId: string;
-  owner: PlayerId;
 }
 
-/** Uma carta de personagem em campo. */
-export interface Unit {
+/** Carta na mesa. `revealed` = virada para cima (visível para os dois). */
+export interface Placed {
   card: CardInst;
-  enteredTurn: number;
-  attacked: boolean;
+  revealed: boolean;
 }
 
 export interface PlayerState {
   name: string;
   deckName: string;
-  life: number;
+  points: number;
   charDeck: CardInst[];
-  /** Deck de truques/equipamentos: ainda sem regras, guardamos só a contagem. */
-  trickDeck: number;
   hand: CardInst[];
-  front: (Unit | null)[];
-  back: (Unit | null)[];
+  trickDeck: CardInst[];
+  trickHand: CardInst[];
+  front: (Placed | null)[];
+  back: (Placed | null)[];
   graveChars: CardInst[];
   graveTricks: CardInst[];
   exile: CardInst[];
-  playsLeft: number;
-  movesLeft: number;
+  tricksUsedThisTurn: number;
+  swapsThisTurn: number;
 }
 
-export type Phase = 'coin' | 'main' | 'over';
+export type Phase = 'coin' | 'place' | 'trick' | 'choose' | 'flip' | 'swap' | 'over';
+
+export interface ColumnState {
+  resolved: boolean;
+  winner: PlayerId | null;
+}
+
+export interface Clash {
+  col: number;
+  chooser: PlayerId;
+  /** quem está vencendo após comparar as frontlines */
+  leader: PlayerId;
+  flipped: [boolean, boolean];
+  /** quem decide agora: o perdedor primeiro, depois o vencedor */
+  stage: 'loser' | 'winner';
+}
 
 export interface GameState {
   rng: number;
   players: [PlayerState, PlayerState];
-  current: PlayerId;
-  /** Turno global, começa em 1 com o primeiro jogador. */
-  turn: number;
   phase: Phase;
+  /** quem precisa agir agora */
+  actor: PlayerId;
+  /** age primeiro em truques e trocas; passa para quem perdeu o último campo */
+  initiative: PlayerId;
+  round: number;
+  turnInRound: number;
+  turnTotal: number;
+  columns: ColumnState[];
+  clash: Clash | null;
+  queue: PlayerId[];
   winner: PlayerId | 'empate' | null;
-  starter: PlayerId | null;
+  coinWinner: PlayerId | null;
   nextUid: number;
 }
 
-export type Target = { kind: 'unit'; row: Row; col: number } | { kind: 'player' };
+export interface TrickTarget {
+  side: PlayerId;
+  row: Row;
+  col: number;
+}
 
 export type Action =
   | { type: 'coin'; call: CoinSide }
-  | { type: 'play'; uid: number; row: Row; col: number }
-  | { type: 'move'; fromRow: Row; fromCol: number; toRow: Row; toCol: number }
-  | { type: 'attack'; col: number; target: Target }
-  | { type: 'end' };
+  | { type: 'place'; front: number[]; back: (number | null)[] }
+  | { type: 'trick'; uid: number; target: TrickTarget }
+  | { type: 'pass' }
+  | { type: 'choose'; col: number }
+  | { type: 'flip'; flip: boolean }
+  | { type: 'swap'; a: number; b: number }
+  | { type: 'done' };
 
-export interface CombatInfo {
-  attackerUid: number;
-  defenderUid: number | null;
-  attValue: number;
-  defValue: number;
-  attBonus: number;
-  defBonus: number;
-  dice: [number, number][];
-  winner: 'att' | 'def' | 'direct';
-  reason: 'valor' | 'dados' | 'dominante' | 'direto';
-}
+export type ClashReason = 'principio' | 'valor' | 'dados';
 
 export type GameEvent =
-  | { kind: 'coin'; call: CoinSide; result: CoinSide; starter: PlayerId }
-  | { kind: 'turn'; player: PlayerId; turn: number }
-  | { kind: 'draw'; player: PlayerId; uid: number }
-  | { kind: 'handFull'; player: PlayerId }
-  | { kind: 'play'; player: PlayerId; uid: number; row: Row; col: number }
-  | { kind: 'move'; player: PlayerId; uid: number; fromRow: Row; fromCol: number; toRow: Row; toCol: number; swappedUid: number | null }
-  | { kind: 'attack'; player: PlayerId; col: number; target: Target; combat: CombatInfo }
-  | { kind: 'destroy'; owner: PlayerId; uid: number; row: Row; col: number; to: 'cemiterio' | 'exilio' }
-  | { kind: 'damage'; player: PlayerId; amount: number; life: number }
+  | { kind: 'coin'; call: CoinSide; result: CoinSide; winner: PlayerId }
+  | { kind: 'round'; round: number }
+  | { kind: 'reshuffle'; player: PlayerId; count: number }
+  | { kind: 'draw'; player: PlayerId; uids: number[] }
+  | { kind: 'trickDraw'; player: PlayerId; uids: number[] }
+  | { kind: 'placed'; player: PlayerId }
+  | { kind: 'turn'; round: number; turn: number; total: number }
+  | { kind: 'trick'; player: PlayerId; uid: number; defId: string; target: TrickTarget; result: 'trocou' | 'roubou' | 'falhou'; revealedUid?: number; newUid?: number }
+  | { kind: 'pass'; player: PlayerId }
+  | { kind: 'roll'; rolls: [number, number][]; chooser: PlayerId }
+  | { kind: 'choose'; player: PlayerId; col: number }
+  | { kind: 'reveal'; col: number; uids: [number, number]; leader: PlayerId; byPrinciple: boolean }
+  | { kind: 'flip'; player: PlayerId; col: number; flipped: boolean; uid?: number }
+  | { kind: 'result'; col: number; winner: PlayerId; totals: [number, number]; reason: ClashReason; dice: [number, number][] }
+  | { kind: 'point'; player: PlayerId; points: number }
+  | { kind: 'swap'; player: PlayerId; a: number; b: number }
+  | { kind: 'swapDone'; player: PlayerId; swaps: number }
+  | { kind: 'roundEnd'; round: number; moved: { player: PlayerId; uid: number; to: 'cemiterio' | 'exilio' }[] }
   | { kind: 'win'; winner: PlayerId | 'empate'; reason: string };
 
 // ─── Utilidades ───────────────────────────────────────────────────────────
@@ -104,41 +149,35 @@ export function beats(a: Principle, b: Principle): boolean {
   return PRINCIPLE_BEATS[a].includes(b);
 }
 
-/** Valor ativo da carta: ATK na frontline, DEF na backline. */
-export function activeValue(c: CardInst, row: Row): number {
-  const d = getDef(c.defId);
-  return row === 'front' ? d.atk : d.def;
-}
-
 export function rowOf(p: PlayerState, row: Row) {
   return row === 'front' ? p.front : p.back;
 }
 
-export function unitAt(p: PlayerState, row: Row, col: number): Unit | null {
-  return rowOf(p, row)[col] ?? null;
+function emptyRow(): (Placed | null)[] {
+  return Array.from({ length: RULES.columns }, () => null);
 }
 
-export function cardsOnField(p: PlayerState): { unit: Unit; row: Row; col: number }[] {
-  const out: { unit: Unit; row: Row; col: number }[] = [];
-  for (const row of ['front', 'back'] as Row[]) {
-    rowOf(p, row).forEach((u, col) => {
-      if (u) out.push({ unit: u, row, col });
-    });
-  }
-  return out;
+export function openColumns(s: GameState): number[] {
+  return s.columns.map((c, i) => (c.resolved ? -1 : i)).filter((i) => i >= 0);
 }
 
-export function findUnit(s: GameState, uid: number) {
-  for (const pid of [0, 1] as PlayerId[]) {
-    for (const f of cardsOnField(s.players[pid])) {
-      if (f.unit.card.uid === uid) return { pid, ...f };
+/** Uma casa da backline pode participar de troca se não tem carta revelada. */
+export function backSwappable(p: PlayerState, col: number): boolean {
+  const b = p.back[col];
+  return !b || !b.revealed;
+}
+
+export function swapPairs(s: GameState, pid: PlayerId): [number, number][] {
+  const p = s.players[pid];
+  const out: [number, number][] = [];
+  for (let a = 0; a < RULES.columns; a++) {
+    for (let b = a + 1; b < RULES.columns; b++) {
+      if (!backSwappable(p, a) || !backSwappable(p, b)) continue;
+      if (!p.back[a] && !p.back[b]) continue;
+      out.push([a, b]);
     }
   }
-  return null;
-}
-
-function emptyRow(): (Unit | null)[] {
-  return Array.from({ length: RULES.boardColumns }, () => null);
+  return out;
 }
 
 // ─── Criação ──────────────────────────────────────────────────────────────
@@ -155,44 +194,47 @@ export function newGame(opts: NewGameOptions): GameState {
   const s: GameState = {
     rng: opts.seed >>> 0,
     players: [null!, null!],
-    current: 0,
-    turn: 0,
     phase: 'coin',
+    actor: 0,
+    initiative: 0,
+    round: 0,
+    turnInRound: 0,
+    turnTotal: 0,
+    columns: [],
+    clash: null,
+    queue: [],
     winner: null,
-    starter: null,
+    coinWinner: null,
     nextUid: 1,
   };
   for (const pid of [0, 1] as PlayerId[]) {
     const deck = DECKS[decks[pid]];
-    const cards: CardInst[] = deck.cards.map((defId) => ({ uid: s.nextUid++, defId, owner: pid }));
-    shuffle(s, cards);
+    const chars = shuffle(s, deck.cards.map((defId) => ({ uid: s.nextUid++, defId })));
+    const tricks = shuffle(s, TRICK_DECK.map((defId) => ({ uid: s.nextUid++, defId })));
     s.players[pid] = {
       name: names[pid],
       deckName: deck.name,
-      life: RULES.startingLife,
-      charDeck: cards,
-      trickDeck: TRICK_DECK_PLACEHOLDER_SIZE,
+      points: 0,
+      charDeck: chars,
       hand: [],
+      trickDeck: tricks,
+      trickHand: [],
       front: emptyRow(),
       back: emptyRow(),
       graveChars: [],
       graveTricks: [],
       exile: [],
-      playsLeft: 0,
-      movesLeft: 0,
+      tricksUsedThisTurn: 0,
+      swapsThisTurn: 0,
     };
-    for (let i = 0; i < RULES.startingHand; i++) {
-      const c = s.players[pid].charDeck.pop();
-      if (c) s.players[pid].hand.push(c);
-    }
   }
   return s;
 }
 
 // ─── Clonagem e informação oculta ─────────────────────────────────────────
 
-function cloneRow(r: (Unit | null)[]) {
-  return r.map((u) => (u ? { card: u.card, enteredTurn: u.enteredTurn, attacked: u.attacked } : null));
+function cloneRow(r: (Placed | null)[]) {
+  return r.map((x) => (x ? { card: x.card, revealed: x.revealed } : null));
 }
 
 function clonePlayer(p: PlayerState): PlayerState {
@@ -200,6 +242,8 @@ function clonePlayer(p: PlayerState): PlayerState {
     ...p,
     charDeck: p.charDeck.slice(),
     hand: p.hand.slice(),
+    trickDeck: p.trickDeck.slice(),
+    trickHand: p.trickHand.slice(),
     front: cloneRow(p.front),
     back: cloneRow(p.back),
     graveChars: p.graveChars.slice(),
@@ -208,349 +252,474 @@ function clonePlayer(p: PlayerState): PlayerState {
   };
 }
 
-/** Clone rápido (as CardInst são imutáveis e podem ser compartilhadas). */
 export function cloneState(s: GameState): GameState {
-  return { ...s, players: [clonePlayer(s.players[0]), clonePlayer(s.players[1])] };
+  return {
+    ...s,
+    players: [clonePlayer(s.players[0]), clonePlayer(s.players[1])],
+    columns: s.columns.map((c) => ({ ...c })),
+    clash: s.clash ? { ...s.clash, flipped: [...s.clash.flipped] as [boolean, boolean] } : null,
+    queue: s.queue.slice(),
+  };
 }
 
 /**
- * Determinização: o bot não pode ver a mão nem a ordem do deck do rival.
- * Embaralha (mão + deck) do oponente e redistribui com os mesmos tamanhos,
- * e embaralha o próprio deck do observador. Assim a IA joga sem trapacear.
+ * Determinização: sorteia um mundo possível do ponto de vista de `viewer`.
+ * Tudo o que o rival esconde (mão, deck e cartas viradas para baixo na mesa)
+ * é embaralhado e redistribuído nas mesmas posições. O bot nunca vê as reais.
  */
 export function determinize(s: GameState, viewer: PlayerId, seed: number): GameState {
   const c = cloneState(s);
   c.rng = seed >>> 0;
   const opp = c.players[other(viewer)];
-  const pool = shuffle(c, [...opp.hand, ...opp.charDeck]);
-  opp.hand = pool.slice(0, opp.hand.length);
-  opp.charDeck = pool.slice(opp.hand.length);
+  const hiddenSlots: Placed[] = [];
+  for (const row of [opp.front, opp.back]) for (const x of row) if (x && !x.revealed) hiddenSlots.push(x);
+  const pool = shuffle(c, [...opp.hand, ...opp.charDeck, ...hiddenSlots.map((x) => x.card)]);
+  let i = 0;
+  opp.hand = pool.slice(i, (i += opp.hand.length));
+  for (const x of hiddenSlots) x.card = pool[i++];
+  opp.charDeck = pool.slice(i);
+  const tpool = shuffle(c, [...opp.trickHand, ...opp.trickDeck]);
+  opp.trickHand = tpool.slice(0, opp.trickHand.length);
+  opp.trickDeck = tpool.slice(opp.trickHand.length);
   shuffle(c, c.players[viewer].charDeck);
+  shuffle(c, c.players[viewer].trickDeck);
   return c;
 }
 
-// ─── Regras: o que pode ser feito ─────────────────────────────────────────
+// ─── Combate de um campo ──────────────────────────────────────────────────
 
-export function canAttackWith(s: GameState, col: number): boolean {
-  if (s.phase !== 'main') return false;
-  if (RULES.firstTurnNoAttack && s.turn === 1) return false;
-  const u = s.players[s.current].front[col];
-  if (!u || u.attacked) return false;
-  if (RULES.summoningSickness && u.enteredTurn === s.turn) return false;
-  return true;
+export interface FrontCompare {
+  leader: PlayerId | null; // null = empate
+  byPrinciple: boolean;
+  values: [number, number];
 }
 
-export function attackTargets(s: GameState, col: number): Target[] {
-  if (!canAttackWith(s, col)) return [];
-  const enemy = s.players[other(s.current)];
-  const out: Target[] = [];
-  for (let c = col - RULES.attackReach; c <= col + RULES.attackReach; c++) {
-    if (c < 0 || c >= RULES.boardColumns) continue;
-    if (enemy.front[c]) out.push({ kind: 'unit', row: 'front', col: c });
+/** Compara as duas frontlines de um campo (princípio primeiro, depois ATK). */
+export function compareFronts(a: CardInst, b: CardInst): FrontCompare {
+  const pa = principleOf(a);
+  const pb = principleOf(b);
+  const aAdv = beats(pa, pb);
+  const bAdv = beats(pb, pa);
+  const va = getDef(a.defId).atk + (PRINCIPLE_MODE === 'bonus' && aAdv ? PRINCIPLE_BONUS : 0);
+  const vb = getDef(b.defId).atk + (PRINCIPLE_MODE === 'bonus' && bAdv ? PRINCIPLE_BONUS : 0);
+  if (PRINCIPLE_MODE === 'dominante' && aAdv !== bAdv) {
+    return { leader: aAdv ? 0 : 1, byPrinciple: true, values: [va, vb] };
   }
-  if (!enemy.front[col]) {
-    if (enemy.back[col]) out.push({ kind: 'unit', row: 'back', col });
-    else out.push({ kind: 'player' });
+  return { leader: va > vb ? 0 : vb > va ? 1 : null, byPrinciple: false, values: [va, vb] };
+}
+
+/** Total de um lado no campo: ATK da frontline (+bônus) + DEF da backline se virada. */
+export function sideTotal(s: GameState, pid: PlayerId, col: number): number {
+  const me = s.players[pid].front[col]!.card;
+  const op = s.players[other(pid)].front[col]!.card;
+  const cmp = compareFronts(me, op);
+  let t = cmp.values[0];
+  const back = s.players[pid].back[col];
+  if (s.clash && s.clash.col === col && s.clash.flipped[pid] && back) t += getDef(back.card.defId).def;
+  return t;
+}
+
+// ─── Fluxo ────────────────────────────────────────────────────────────────
+
+function hasAnyChar(p: PlayerState) {
+  return p.hand.length + p.charDeck.length + p.graveChars.length > 0;
+}
+
+function endGame(s: GameState, events: GameEvent[], reason: string) {
+  const [a, b] = s.players;
+  s.phase = 'over';
+  s.winner = a.points === b.points ? 'empate' : a.points > b.points ? 0 : 1;
+  s.queue = [];
+  events.push({ kind: 'win', winner: s.winner, reason });
+}
+
+function drawChars(s: GameState, pid: PlayerId, events: GameEvent[]): boolean {
+  const p = s.players[pid];
+  const need = RULES.charsPerRound - p.hand.length;
+  if (need > 0 && p.charDeck.length < need && RULES.reshuffleGraveyard && p.graveChars.length) {
+    const back = p.graveChars.splice(0);
+    p.charDeck.unshift(...shuffle(s, back));
+    events.push({ kind: 'reshuffle', player: pid, count: back.length });
   }
-  return out;
+  const uids: number[] = [];
+  for (let i = 0; i < need && p.charDeck.length; i++) {
+    const c = p.charDeck.pop()!;
+    p.hand.push(c);
+    uids.push(c.uid);
+  }
+  if (uids.length) events.push({ kind: 'draw', player: pid, uids });
+  return p.hand.length >= RULES.columns; // precisa de ao menos 5 para a frontline
 }
 
-export function moveTargets(s: GameState, row: Row, col: number): { row: Row; col: number }[] {
-  if (s.phase !== 'main') return [];
-  const me = s.players[s.current];
-  if (me.movesLeft <= 0 || !unitAt(me, row, col)) return [];
-  const out: { row: Row; col: number }[] = [{ row: row === 'front' ? 'back' : 'front', col }];
-  if (col > 0) out.push({ row, col: col - 1 });
-  if (col < RULES.boardColumns - 1) out.push({ row, col: col + 1 });
-  return out;
+function drawTricks(s: GameState, pid: PlayerId, n: number, events: GameEvent[]) {
+  const p = s.players[pid];
+  const uids: number[] = [];
+  for (let i = 0; i < n && p.trickDeck.length && p.trickHand.length < RULES.trickHandMax; i++) {
+    const c = p.trickDeck.pop()!;
+    p.trickHand.push(c);
+    uids.push(c.uid);
+  }
+  if (uids.length) events.push({ kind: 'trickDraw', player: pid, uids });
 }
 
-export function playSlots(s: GameState): { row: Row; col: number }[] {
-  if (s.phase !== 'main') return [];
-  const me = s.players[s.current];
-  if (me.playsLeft <= 0) return [];
-  const out: { row: Row; col: number }[] = [];
-  for (const row of ['front', 'back'] as Row[]) {
-    rowOf(me, row).forEach((u, col) => {
-      if (!u) out.push({ row, col });
+function startRound(s: GameState, events: GameEvent[]) {
+  s.round++;
+  s.turnInRound = 0;
+  s.columns = Array.from({ length: RULES.columns }, () => ({ resolved: false, winner: null }));
+  s.clash = null;
+  events.push({ kind: 'round', round: s.round });
+  let ok = true;
+  for (const pid of [0, 1] as PlayerId[]) {
+    if (!drawChars(s, pid, events)) ok = false;
+    drawTricks(s, pid, s.round === 1 ? RULES.trickHandStart : RULES.trickDrawPerRound, events);
+  }
+  if (!ok) return endGame(s, events, 'personagens insuficientes');
+  s.phase = 'place';
+  s.queue = [s.initiative, other(s.initiative)];
+  s.actor = s.queue[0];
+}
+
+function startTurn(s: GameState, events: GameEvent[]) {
+  s.turnInRound++;
+  s.turnTotal++;
+  s.clash = null;
+  for (const p of s.players) {
+    p.tricksUsedThisTurn = 0;
+    p.swapsThisTurn = 0;
+  }
+  events.push({ kind: 'turn', round: s.round, turn: s.turnInRound, total: s.turnTotal });
+  s.queue = [s.initiative, other(s.initiative)].filter((pid) => trickActions(s, pid).length > 0);
+  if (s.queue.length) {
+    s.phase = 'trick';
+    s.actor = s.queue[0];
+  } else rollForChoice(s, events);
+}
+
+function rollForChoice(s: GameState, events: GameEvent[]) {
+  const rolls: [number, number][] = [];
+  for (;;) {
+    const a = rollD6(s);
+    const b = rollD6(s);
+    rolls.push([a, b]);
+    if (a !== b) break;
+  }
+  const [a, b] = rolls[rolls.length - 1];
+  const chooser: PlayerId = a > b ? 0 : 1;
+  events.push({ kind: 'roll', rolls, chooser });
+  s.phase = 'choose';
+  s.actor = chooser;
+  s.queue = [];
+  s.clash = null;
+  const open = openColumns(s);
+  if (open.length === 1) applyChoose(s, open[0], events);
+}
+
+function applyChoose(s: GameState, col: number, events: GameEvent[]) {
+  const chooser = s.actor;
+  events.push({ kind: 'choose', player: chooser, col });
+  const [p0, p1] = s.players;
+  p0.front[col]!.revealed = true;
+  p1.front[col]!.revealed = true;
+  const cmp = compareFronts(p0.front[col]!.card, p1.front[col]!.card);
+  const leader = cmp.leader ?? chooser; // empate nas frontlines: quem escolheu o campo fica à frente
+  events.push({ kind: 'reveal', col, uids: [p0.front[col]!.card.uid, p1.front[col]!.card.uid], leader, byPrinciple: cmp.byPrinciple });
+  s.clash = { col, chooser, leader, flipped: [false, false], stage: 'loser' };
+  if (cmp.byPrinciple) return finishClash(s, events, 'principio');
+  const loser = other(leader);
+  if (canFlip(s, loser)) {
+    s.phase = 'flip';
+    s.actor = loser;
+  } else finishClash(s, events);
+}
+
+function canFlip(s: GameState, pid: PlayerId): boolean {
+  if (!s.clash) return false;
+  const b = s.players[pid].back[s.clash.col];
+  return !!b && !b.revealed;
+}
+
+function finishClash(s: GameState, events: GameEvent[], forced?: ClashReason) {
+  const c = s.clash!;
+  const t0 = sideTotal(s, 0, c.col);
+  const t1 = sideTotal(s, 1, c.col);
+  let winner: PlayerId;
+  let reason: ClashReason;
+  const dice: [number, number][] = [];
+  if (forced === 'principio') {
+    winner = c.leader;
+    reason = 'principio';
+  } else if (t0 !== t1) {
+    winner = t0 > t1 ? 0 : 1;
+    reason = 'valor';
+  } else {
+    for (;;) {
+      const a = rollD6(s);
+      const b = rollD6(s);
+      dice.push([a, b]);
+      if (a !== b) {
+        winner = a > b ? 0 : 1;
+        break;
+      }
+    }
+    reason = 'dados';
+  }
+  events.push({ kind: 'result', col: c.col, winner, totals: [t0, t1], reason, dice });
+  s.columns[c.col] = { resolved: true, winner };
+  s.players[winner].points++;
+  events.push({ kind: 'point', player: winner, points: s.players[winner].points });
+  s.initiative = other(winner);
+
+  if (s.players[winner].points >= RULES.pointsToWin) return endGame(s, events, `${RULES.pointsToWin} pontos`);
+  if (s.turnTotal >= RULES.maxTurns) return endGame(s, events, 'limite de turnos');
+
+  s.queue = [s.initiative, other(s.initiative)].filter((pid) => swapPairs(s, pid).length > 0);
+  if (s.queue.length) {
+    s.phase = 'swap';
+    s.actor = s.queue[0];
+  } else afterSwaps(s, events);
+}
+
+function afterSwaps(s: GameState, events: GameEvent[]) {
+  if (openColumns(s).length === 0) {
+    endRound(s, events);
+    if (s.phase === 'over') return;
+    for (const pid of [0, 1] as PlayerId[]) {
+      if (!hasAnyChar(s.players[pid])) return endGame(s, events, 'sem personagens');
+    }
+    startRound(s, events);
+  } else startTurn(s, events);
+}
+
+function endRound(s: GameState, events: GameEvent[]) {
+  const moved: { player: PlayerId; uid: number; to: 'cemiterio' | 'exilio' }[] = [];
+  for (const pid of [0, 1] as PlayerId[]) {
+    const p = s.players[pid];
+    for (const row of [p.front, p.back]) {
+      row.forEach((x, i) => {
+        if (!x) return;
+        const ex = EXILE_ON_DEATH.includes(principleOf(x.card));
+        (ex ? p.exile : p.graveChars).push(x.card);
+        moved.push({ player: pid, uid: x.card.uid, to: ex ? 'exilio' : 'cemiterio' });
+        row[i] = null;
+      });
+    }
+  }
+  events.push({ kind: 'roundEnd', round: s.round, moved });
+}
+
+function nextInQueue(s: GameState): boolean {
+  s.queue.shift();
+  if (s.queue.length) {
+    s.actor = s.queue[0];
+    return true;
+  }
+  return false;
+}
+
+// ─── Truques ──────────────────────────────────────────────────────────────
+
+export function trickTargets(s: GameState, pid: PlayerId, defId: string): TrickTarget[] {
+  const t = getTrick(defId);
+  const out: TrickTarget[] = [];
+  if (t.target === 'ownHiddenFront') {
+    if (!s.players[pid].charDeck.length) return out;
+    for (const col of openColumns(s)) {
+      const f = s.players[pid].front[col];
+      if (f && !f.revealed) out.push({ side: pid, row: 'front', col });
+    }
+  } else if (t.target === 'enemyHiddenBack') {
+    const op = other(pid);
+    s.players[op].back.forEach((b, col) => {
+      if (b && !b.revealed) out.push({ side: op, row: 'back', col });
     });
   }
   return out;
 }
 
-export function legalActions(s: GameState): Action[] {
-  if (s.phase === 'over') return [];
-  if (s.phase === 'coin') return [{ type: 'coin', call: 'cara' }, { type: 'coin', call: 'coroa' }];
-  const me = s.players[s.current];
+export function trickActions(s: GameState, pid: PlayerId): Action[] {
+  const p = s.players[pid];
+  if (p.tricksUsedThisTurn >= RULES.tricksPerTurn) return [];
   const out: Action[] = [];
-  const slots = playSlots(s);
   const seen = new Set<string>();
-  for (const c of me.hand) {
-    if (seen.has(c.defId)) continue; // cópias iguais geram as mesmas jogadas
+  for (const c of p.trickHand) {
+    if (seen.has(c.defId)) continue;
     seen.add(c.defId);
-    for (const sl of slots) out.push({ type: 'play', uid: c.uid, row: sl.row, col: sl.col });
+    for (const target of trickTargets(s, pid, c.defId)) out.push({ type: 'trick', uid: c.uid, target });
   }
-  for (const f of cardsOnField(me)) {
-    for (const t of moveTargets(s, f.row, f.col)) {
-      out.push({ type: 'move', fromRow: f.row, fromCol: f.col, toRow: t.row, toCol: t.col });
-    }
-  }
-  for (let col = 0; col < RULES.boardColumns; col++) {
-    for (const t of attackTargets(s, col)) out.push({ type: 'attack', col, target: t });
-  }
-  out.push({ type: 'end' });
   return out;
 }
 
-export function isLegal(s: GameState, a: Action): boolean {
-  return legalActions(s).some((b) => sameAction(a, b, s));
-}
+function applyTrick(s: GameState, pid: PlayerId, uid: number, target: TrickTarget, events: GameEvent[]) {
+  const p = s.players[pid];
+  const idx = p.trickHand.findIndex((c) => c.uid === uid);
+  if (idx < 0) throw new Error('Truque não está na mão.');
+  const card = p.trickHand[idx];
+  if (!trickTargets(s, pid, card.defId).some((t) => t.side === target.side && t.row === target.row && t.col === target.col)) {
+    throw new Error('Alvo inválido para o truque.');
+  }
+  p.trickHand.splice(idx, 1);
+  p.graveTricks.push(card);
+  p.tricksUsedThisTurn++;
 
-export function sameAction(a: Action, b: Action, s?: GameState): boolean {
-  if (a.type !== b.type) return false;
-  switch (a.type) {
-    case 'coin':
-      return a.call === (b as typeof a).call;
-    case 'play': {
-      const bb = b as typeof a;
-      if (a.row !== bb.row || a.col !== bb.col) return false;
-      if (a.uid === bb.uid) return true;
-      // mesma carta (cópia) conta como a mesma jogada
-      if (!s) return false;
-      const hand = s.players[s.current].hand;
-      const ca = hand.find((c) => c.uid === a.uid);
-      const cb = hand.find((c) => c.uid === bb.uid);
-      return !!ca && !!cb && ca.defId === cb.defId;
+  if (card.defId === 't-mapa-confuso') {
+    const slot = p.front[target.col]!;
+    const old = slot.card;
+    const fresh = p.charDeck.pop()!;
+    const pos = Math.floor(rand(s) * (p.charDeck.length + 1));
+    p.charDeck.splice(pos, 0, old);
+    slot.card = fresh;
+    events.push({ kind: 'trick', player: pid, uid, defId: card.defId, target, result: 'trocou', newUid: fresh.uid });
+  } else if (card.defId === 't-vara-de-pesca') {
+    const enemy = s.players[target.side];
+    const slot = enemy.back[target.col]!;
+    if (!isTrick(slot.card.defId)) {
+      enemy.back[target.col] = null;
+      p.hand.push(slot.card);
+      events.push({ kind: 'trick', player: pid, uid, defId: card.defId, target, result: 'roubou', revealedUid: slot.card.uid });
+    } else {
+      slot.revealed = true;
+      events.push({ kind: 'trick', player: pid, uid, defId: card.defId, target, result: 'falhou', revealedUid: slot.card.uid });
     }
-    case 'move': {
-      const bb = b as typeof a;
-      return a.fromRow === bb.fromRow && a.fromCol === bb.fromCol && a.toRow === bb.toRow && a.toCol === bb.toCol;
-    }
-    case 'attack': {
-      const bb = b as typeof a;
-      if (a.col !== bb.col || a.target.kind !== bb.target.kind) return false;
-      if (a.target.kind === 'player') return true;
-      const ta = a.target;
-      const tb = bb.target as typeof ta;
-      return ta.row === tb.row && ta.col === tb.col;
-    }
-    case 'end':
-      return true;
   }
 }
 
-// ─── Combate ──────────────────────────────────────────────────────────────
-
-export interface CombatPreview {
-  attValue: number;
-  defValue: number;
-  attBonus: number;
-  defBonus: number;
-  /** Probabilidade de o atacante vencer (empate = 50% nos dados). */
-  pAttWins: number;
-  dominant: 'att' | 'def' | null;
-}
-
-export function previewCombat(att: CardInst, def: CardInst, defRow: Row): CombatPreview {
-  const pa = principleOf(att);
-  const pd = principleOf(def);
-  const attAdv = beats(pa, pd);
-  const defAdv = beats(pd, pa);
-  const attValue = activeValue(att, 'front');
-  const defValue = activeValue(def, defRow);
-  if (PRINCIPLE_MODE === 'dominante' && attAdv !== defAdv) {
-    return { attValue, defValue, attBonus: 0, defBonus: 0, pAttWins: attAdv ? 1 : 0, dominant: attAdv ? 'att' : 'def' };
-  }
-  const attBonus = PRINCIPLE_MODE === 'bonus' && attAdv ? PRINCIPLE_BONUS : 0;
-  const defBonus = PRINCIPLE_MODE === 'bonus' && defAdv ? PRINCIPLE_BONUS : 0;
-  const a = attValue + attBonus;
-  const d = defValue + defBonus;
-  return { attValue, defValue, attBonus, defBonus, pAttWins: a > d ? 1 : a < d ? 0 : 0.5, dominant: null };
-}
+// ─── Ações legais ─────────────────────────────────────────────────────────
 
 /**
- * `forceTie` serve à IA: resolve um empate sem gastar dados, para calcular
- * os dois desfechos possíveis de forma exata.
+ * Ações legais para quem age agora. Na distribuição o espaço é grande demais
+ * para listar (10! arranjos); use `validatePlace` e os geradores da IA.
  */
-function resolveCombat(s: GameState, att: CardInst, def: CardInst, defRow: Row, forceTie?: 'att' | 'def'): CombatInfo {
-  const p = previewCombat(att, def, defRow);
-  const base = {
-    attackerUid: att.uid,
-    defenderUid: def.uid,
-    attValue: p.attValue,
-    defValue: p.defValue,
-    attBonus: p.attBonus,
-    defBonus: p.defBonus,
-    dice: [] as [number, number][],
-  };
-  if (p.dominant) return { ...base, winner: p.dominant, reason: 'dominante' };
-  if (p.pAttWins === 1) return { ...base, winner: 'att', reason: 'valor' };
-  if (p.pAttWins === 0) return { ...base, winner: 'def', reason: 'valor' };
-  if (forceTie) return { ...base, winner: forceTie, reason: 'dados' };
-  // Empate: cada lado rola 1d6; maior vence, empate rola de novo.
-  for (let i = 0; i < 20; i++) {
-    const a = rollD6(s);
-    const d = rollD6(s);
-    base.dice.push([a, d]);
-    if (a !== d) return { ...base, winner: a > d ? 'att' : 'def', reason: 'dados' };
-  }
-  return { ...base, winner: rand(s) < 0.5 ? 'att' : 'def', reason: 'dados' };
-}
-
-function destroy(s: GameState, owner: PlayerId, row: Row, col: number, events: GameEvent[]) {
-  const p = s.players[owner];
-  const u = rowOf(p, row)[col];
-  if (!u) return;
-  rowOf(p, row)[col] = null;
-  const toExile = EXILE_ON_DEATH.includes(principleOf(u.card));
-  (toExile ? p.exile : p.graveChars).push(u.card);
-  events.push({ kind: 'destroy', owner, uid: u.card.uid, row, col, to: toExile ? 'exilio' : 'cemiterio' });
-}
-
-// ─── Fluxo de turno ───────────────────────────────────────────────────────
-
-function hasAnything(p: PlayerState): boolean {
-  return p.charDeck.length > 0 || p.hand.length > 0 || cardsOnField(p).length > 0;
-}
-
-function checkWin(s: GameState, events: GameEvent[]): boolean {
-  if (s.phase === 'over') return true;
-  const dead = ([0, 1] as PlayerId[]).filter((pid) => s.players[pid].life <= 0 || !hasAnything(s.players[pid]));
-  if (dead.length === 0) return false;
-  s.phase = 'over';
-  s.winner = dead.length === 2 ? 'empate' : other(dead[0]);
-  const reason = s.players[dead[0]].life <= 0 ? 'vida zerada' : 'sem personagens';
-  events.push({ kind: 'win', winner: s.winner, reason });
-  return true;
-}
-
-function startTurn(s: GameState, events: GameEvent[]) {
-  const me = s.players[s.current];
-  me.playsLeft = RULES.playsPerTurn;
-  me.movesLeft = RULES.movesPerTurn;
-  for (const f of cardsOnField(me)) f.unit.attacked = false;
-  events.push({ kind: 'turn', player: s.current, turn: s.turn });
-  const skipDraw = RULES.firstTurnNoDraw && s.turn === 1;
-  if (!skipDraw && me.charDeck.length > 0) {
-    if (me.hand.length >= RULES.maxHand) {
-      events.push({ kind: 'handFull', player: s.current });
-    } else {
-      const c = me.charDeck.pop()!;
-      me.hand.push(c);
-      events.push({ kind: 'draw', player: s.current, uid: c.uid });
+export function legalActions(s: GameState): Action[] {
+  switch (s.phase) {
+    case 'coin':
+      return [{ type: 'coin', call: 'cara' }, { type: 'coin', call: 'coroa' }];
+    case 'place':
+      return [];
+    case 'trick':
+      return [{ type: 'pass' }, ...trickActions(s, s.actor)];
+    case 'choose':
+      return openColumns(s).map((col) => ({ type: 'choose', col }) as Action);
+    case 'flip':
+      return [{ type: 'flip', flip: true }, { type: 'flip', flip: false }];
+    case 'swap': {
+      const out: Action[] = [{ type: 'done' }];
+      if (s.players[s.actor].swapsThisTurn < RULES.maxSwapsPerTurn) {
+        for (const [a, b] of swapPairs(s, s.actor)) out.push({ type: 'swap', a, b });
+      }
+      return out;
     }
+    case 'over':
+      return [];
   }
-  checkWin(s, events);
 }
 
-function endTurn(s: GameState, events: GameEvent[]) {
-  if (s.turn >= RULES.maxTurns) {
-    const [a, b] = s.players;
-    s.phase = 'over';
-    s.winner = a.life === b.life ? 'empate' : a.life > b.life ? 0 : 1;
-    events.push({ kind: 'win', winner: s.winner, reason: 'limite de turnos' });
-    return;
-  }
-  s.current = other(s.current);
-  s.turn++;
-  startTurn(s, events);
+export function validatePlace(s: GameState, a: Extract<Action, { type: 'place' }>): string | null {
+  if (s.phase !== 'place') return 'Fora da fase de distribuição.';
+  const hand = new Set(s.players[s.actor].hand.map((c) => c.uid));
+  if (a.front.length !== RULES.columns || a.back.length !== RULES.columns) return 'Distribua 5 casas de cada linha.';
+  const used = [...a.front, ...a.back.filter((x): x is number => x !== null)];
+  if (new Set(used).size !== used.length) return 'Carta repetida.';
+  if (used.some((u) => !hand.has(u))) return 'Carta fora da mão.';
+  const expectedBack = Math.min(RULES.columns, hand.size - RULES.columns);
+  if (a.back.filter((x) => x !== null).length !== expectedBack) return `Coloque ${expectedBack} carta(s) na backline.`;
+  return null;
+}
+
+export function isLegal(s: GameState, a: Action): boolean {
+  if (a.type === 'place') return validatePlace(s, a) === null;
+  return legalActions(s).some((b) => JSON.stringify(b) === JSON.stringify(a));
 }
 
 // ─── Aplicar ação ─────────────────────────────────────────────────────────
 
-export interface ApplyOptions {
-  /** Só para a IA: decide empates sem rolar dados. */
-  forceTie?: 'att' | 'def';
-}
-
-/** Aplica a ação no estado (mutando) e devolve os eventos para a interface. */
-export function applyAction(s: GameState, a: Action, opts: ApplyOptions = {}): GameEvent[] {
+export function applyAction(s: GameState, a: Action): GameEvent[] {
   const events: GameEvent[] = [];
   if (s.phase === 'over') return events;
-
-  if (a.type === 'coin') {
-    if (s.phase !== 'coin') throw new Error('A moeda já foi lançada.');
-    const result: CoinSide = rand(s) < 0.5 ? 'cara' : 'coroa';
-    const starter: PlayerId = result === a.call ? s.current : other(s.current);
-    s.starter = starter;
-    s.current = starter;
-    s.turn = 1;
-    s.phase = 'main';
-    events.push({ kind: 'coin', call: a.call, result, starter });
-    startTurn(s, events);
-    return events;
-  }
-
-  if (s.phase !== 'main') throw new Error('Ação fora de hora.');
-  const pid = s.current;
-  const me = s.players[pid];
-  const enemyId = other(pid);
-  const enemy = s.players[enemyId];
+  const pid = s.actor;
 
   switch (a.type) {
-    case 'play': {
-      if (me.playsLeft <= 0) throw new Error('Você já baixou uma carta neste turno.');
-      const idx = me.hand.findIndex((c) => c.uid === a.uid);
-      if (idx < 0) throw new Error('Carta não está na mão.');
-      if (unitAt(me, a.row, a.col)) throw new Error('Casa ocupada.');
-      const [card] = me.hand.splice(idx, 1);
-      rowOf(me, a.row)[a.col] = { card, enteredTurn: s.turn, attacked: false };
-      me.playsLeft--;
-      events.push({ kind: 'play', player: pid, uid: card.uid, row: a.row, col: a.col });
+    case 'coin': {
+      if (s.phase !== 'coin') throw new Error('A moeda já foi lançada.');
+      const result: CoinSide = rand(s) < 0.5 ? 'cara' : 'coroa';
+      const winner: PlayerId = result === a.call ? pid : other(pid);
+      s.coinWinner = winner;
+      s.initiative = winner;
+      events.push({ kind: 'coin', call: a.call, result, winner });
+      startRound(s, events);
       break;
     }
-    case 'move': {
-      const ok = moveTargets(s, a.fromRow, a.fromCol).some((t) => t.row === a.toRow && t.col === a.toCol);
-      if (!ok) throw new Error('Movimento inválido.');
-      const u = unitAt(me, a.fromRow, a.fromCol)!;
-      const other_ = unitAt(me, a.toRow, a.toCol);
-      rowOf(me, a.toRow)[a.toCol] = u;
-      rowOf(me, a.fromRow)[a.fromCol] = other_;
-      me.movesLeft--;
-      events.push({
-        kind: 'move', player: pid, uid: u.card.uid, fromRow: a.fromRow, fromCol: a.fromCol,
-        toRow: a.toRow, toCol: a.toCol, swappedUid: other_ ? other_.card.uid : null,
-      });
+    case 'place': {
+      const err = validatePlace(s, a);
+      if (err) throw new Error(err);
+      const p = s.players[pid];
+      const take = (uid: number) => {
+        const i = p.hand.findIndex((c) => c.uid === uid);
+        return p.hand.splice(i, 1)[0];
+      };
+      a.front.forEach((uid, col) => (p.front[col] = { card: take(uid), revealed: false }));
+      a.back.forEach((uid, col) => (p.back[col] = uid === null ? null : { card: take(uid), revealed: false }));
+      events.push({ kind: 'placed', player: pid });
+      if (!nextInQueue(s)) startTurn(s, events);
       break;
     }
-    case 'attack': {
-      const targets = attackTargets(s, a.col);
-      if (!targets.some((t) => sameAction({ type: 'attack', col: a.col, target: t }, a))) {
-        throw new Error('Ataque inválido.');
+    case 'trick':
+    case 'pass': {
+      if (s.phase !== 'trick') throw new Error('Fora da fase de truques.');
+      if (a.type === 'trick') applyTrick(s, pid, a.uid, a.target, events);
+      else events.push({ kind: 'pass', player: pid });
+      if (!nextInQueue(s)) rollForChoice(s, events);
+      break;
+    }
+    case 'choose': {
+      if (s.phase !== 'choose') throw new Error('Fora da escolha de campo.');
+      if (!openColumns(s).includes(a.col)) throw new Error('Campo já disputado.');
+      applyChoose(s, a.col, events);
+      break;
+    }
+    case 'flip': {
+      if (s.phase !== 'flip' || !s.clash) throw new Error('Nada para virar agora.');
+      const c = s.clash;
+      if (a.flip) {
+        if (!canFlip(s, pid)) throw new Error('Não há backline oculta neste campo.');
+        c.flipped[pid] = true;
+        s.players[pid].back[c.col]!.revealed = true;
       }
-      const att = me.front[a.col]!;
-      att.attacked = true;
-      if (a.target.kind === 'player') {
-        const dmg = activeValue(att.card, 'front');
-        enemy.life -= dmg;
-        events.push({
-          kind: 'attack', player: pid, col: a.col, target: a.target,
-          combat: { attackerUid: att.card.uid, defenderUid: null, attValue: dmg, defValue: 0, attBonus: 0, defBonus: 0, dice: [], winner: 'direct', reason: 'direto' },
-        });
-        events.push({ kind: 'damage', player: enemyId, amount: dmg, life: enemy.life });
-      } else {
-        const t = a.target;
-        const def = unitAt(enemy, t.row, t.col)!;
-        const combat = resolveCombat(s, att.card, def.card, t.row, opts.forceTie);
-        events.push({ kind: 'attack', player: pid, col: a.col, target: t, combat });
-        if (combat.winner === 'att') destroy(s, enemyId, t.row, t.col, events);
-        else destroy(s, pid, 'front', a.col, events);
-      }
+      events.push({ kind: 'flip', player: pid, col: c.col, flipped: a.flip, uid: a.flip ? s.players[pid].back[c.col]!.card.uid : undefined });
+      if (c.stage === 'loser' && a.flip && canFlip(s, c.leader)) {
+        c.stage = 'winner';
+        s.actor = c.leader;
+      } else finishClash(s, events);
       break;
     }
-    case 'end':
-      endTurn(s, events);
-      return events;
+    case 'swap': {
+      if (s.phase !== 'swap') throw new Error('Fora da fase de trocas.');
+      if (!swapPairs(s, pid).some(([x, y]) => (x === a.a && y === a.b) || (x === a.b && y === a.a))) {
+        throw new Error('Só cartas ocultas da backline podem trocar de lugar.');
+      }
+      const p = s.players[pid];
+      [p.back[a.a], p.back[a.b]] = [p.back[a.b], p.back[a.a]];
+      p.swapsThisTurn++;
+      events.push({ kind: 'swap', player: pid, a: a.a, b: a.b });
+      break;
+    }
+    case 'done': {
+      if (s.phase !== 'swap') throw new Error('Fora da fase de trocas.');
+      events.push({ kind: 'swapDone', player: pid, swaps: s.players[pid].swapsThisTurn });
+      if (!nextInQueue(s)) afterSwaps(s, events);
+      break;
+    }
   }
-  checkWin(s, events);
   return events;
 }
 
-/** Se a ação é um ataque que pode empatar, devolve true. Usado pela IA. */
-export function attackCanTie(s: GameState, a: Action): boolean {
-  if (a.type !== 'attack' || a.target.kind !== 'unit') return false;
-  const att = s.players[s.current].front[a.col];
-  const def = unitAt(s.players[other(s.current)], a.target.row, a.target.col);
-  if (!att || !def) return false;
-  return previewCombat(att.card, def.card, a.target.row).pAttWins === 0.5;
+/** Encontra uma carta em qualquer lugar (para nomes no registro e na interface). */
+export function findCard(s: GameState, uid: number): CardInst | null {
+  for (const p of s.players) {
+    for (const row of [p.front, p.back]) for (const x of row) if (x?.card.uid === uid) return x.card;
+    for (const list of [p.hand, p.charDeck, p.graveChars, p.exile, p.trickHand, p.trickDeck, p.graveTricks]) {
+      const c = list.find((x) => x.uid === uid);
+      if (c) return c;
+    }
+  }
+  return null;
 }

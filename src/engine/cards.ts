@@ -83,13 +83,75 @@ export function getDef(id: string): CharacterDef {
 
 const COMMONS = CHARACTERS.filter((c) => c.principle !== 'realeza').map((c) => c.id);
 
-/** Decks provisórios: 18 comuns (6 de cada princípio) + 2 Realezas = 20 cartas. */
+/**
+ * Decks provisórios de 30 personagens: os 18 comuns, mais 10 segundas cópias
+ * e 2 Realezas. Uma rodada consome 10 cartas; o cemitério volta ao deck quando acaba.
+ */
 export const DECKS = {
-  vanguarda: { name: 'Vanguarda de Runi', cards: [...COMMONS, 'r-regente', 'r-herdeiro'] },
-  tormenta: { name: 'Legião das Tormentas', cards: [...COMMONS, 'r-princesa', 'r-herdeiro'] },
+  vanguarda: {
+    name: 'Vanguarda de Runi',
+    cards: [
+      ...COMMONS,
+      'e-sapador', 'e-cerco', 'e-calculista', 'i-lanceiro', 'i-escudeiro', 'i-veterano',
+      'q-capitao', 'q-comandante', 'q-marechal', 'q-intendente',
+      'r-regente', 'r-herdeiro',
+    ],
+  },
+  tormenta: {
+    name: 'Legião das Tormentas',
+    cards: [
+      ...COMMONS,
+      'e-balista', 'e-alquimista', 'e-artifice', 'i-batedora', 'i-berserker', 'i-arqueiro',
+      'q-mensageiro', 'q-estrategista', 'q-comandante', 'q-capitao',
+      'r-princesa', 'r-herdeiro',
+    ],
+  },
 } as const;
 
 export type DeckKey = keyof typeof DECKS;
 
-/** O deck de truques/equipamentos ainda não tem regras: só um verso com contagem. */
-export const TRICK_DECK_PLACEHOLDER_SIZE = 10;
+// ─── Truques e equipamentos ───────────────────────────────────────────────
+
+export type TrickKind = 'truque' | 'equipamento';
+export type TrickTargetKind = 'ownHiddenFront' | 'enemyHiddenBack';
+
+/**
+ * Cartas de truque/equipamento: não têm ATK, DEF nem princípio.
+ * Cada uma tem um efeito, implementado em engine/game.ts (applyTrick).
+ */
+export interface TrickDef {
+  id: string;
+  name: string;
+  kind: TrickKind;
+  target: TrickTargetKind;
+  text: string;
+}
+
+export const TRICKS: TrickDef[] = [
+  {
+    id: 't-mapa-confuso', name: 'Mapa Confuso', kind: 'truque', target: 'ownHiddenFront',
+    text: 'Troque uma carta oculta da sua frontline (em campo ainda não disputado) pela carta do topo do seu deck.',
+  },
+  {
+    id: 't-vara-de-pesca', name: 'Vara de Pesca', kind: 'equipamento', target: 'enemyHiddenBack',
+    text: 'Escolha uma carta oculta da backline inimiga. Se for um personagem, você a rouba para a sua mão.',
+  },
+];
+
+export const TRICK_BY_ID: Record<string, TrickDef> = Object.fromEntries(TRICKS.map((c) => [c.id, c]));
+
+export function isTrick(defId: string): boolean {
+  return defId in TRICK_BY_ID;
+}
+
+export function getTrick(id: string): TrickDef {
+  const d = TRICK_BY_ID[id];
+  if (!d) throw new Error(`Truque desconhecido: ${id}`);
+  return d;
+}
+
+/** Deck provisório de truques/equipamentos: 10 cartas. */
+export const TRICK_DECK: string[] = [
+  ...Array(5).fill('t-mapa-confuso'),
+  ...Array(5).fill('t-vara-de-pesca'),
+];

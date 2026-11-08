@@ -1,8 +1,8 @@
 import { PRINCIPLE_LABEL } from '../config';
-import { getDef } from '../engine/cards';
+import { getDef, getTrick, isTrick } from '../engine/cards';
 import type { CardInst, Row } from '../engine/game';
 import versoEmblema from '../assets/verso-emblema.jpg';
-import { ART, ICON, emblemSvg } from './art';
+import { ART, ICON, emblemSvg, trickSvg } from './art';
 
 export interface CardViewOpts {
   row?: Row;
@@ -16,6 +16,7 @@ const esc = (t: string) => t.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 
 /** Frente da carta de personagem. ATK no canto superior esquerdo, DEF no direito. */
 export function cardHtml(card: CardInst, o: CardViewOpts = {}): string {
+  if (isTrick(card.defId)) return trickHtml(card, o);
   const d = getDef(card.defId);
   const cls = ['card', `p-${d.principle}`];
   if (o.row === 'front') cls.push('in-front');
@@ -46,6 +47,22 @@ export function backHtml(extra = ''): string {
     <div class="face">
       <div class="seal"><img src="${versoEmblema}" alt="" draggable="false"></div>
       <div class="back-title">Game of<br>Torments</div>
+    </div>
+  </div>`;
+}
+
+/** Carta de truque/equipamento: sem ATK, DEF ou princípio; só nome, tipo e efeito. */
+export function trickHtml(card: CardInst, o: CardViewOpts = {}): string {
+  const d = getTrick(card.defId);
+  const cls = ['card', 'trick', `k-${d.kind}`];
+  if (o.big) cls.push('lg');
+  if (o.cls) cls.push(...o.cls);
+  return `<div class="${cls.join(' ')}" data-uid="${card.uid}" ${o.attrs ?? ''} aria-label="${esc(d.name)}, ${d.kind}">
+    <div class="face">
+      <div class="art">${trickSvg(d.id)}</div>
+      <div class="name">${esc(d.name)}</div>
+      <div class="text">${esc(d.text)}</div>
+      <div class="ptag">${d.kind === 'truque' ? 'Truque' : 'Equipamento'}</div>
     </div>
   </div>`;
 }

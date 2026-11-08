@@ -1,8 +1,8 @@
 /**
  * Game of Torments — regras e balanceamento.
  *
- * Tudo que é "regra provisória" mora aqui, para a gente ir ajustando sem
- * mexer no motor. Quando uma regra oficial chegar, troque o valor/flag.
+ * Tudo que é ajustável mora aqui. Os itens marcados com (provisório) foram
+ * escolhidos para o jogo funcionar e podem mudar quando a regra oficial chegar.
  */
 
 export type Principle = 'engenharia' | 'infantaria' | 'qg' | 'realeza';
@@ -18,13 +18,9 @@ export const PRINCIPLE_LABEL: Record<Principle, string> = {
 
 /**
  * Pedra, papel e tesoura dos princípios.
- * Ciclo básico: Engenharia > QG > Infantaria > Engenharia.
- * Realeza vence todos os outros, mas ao ser derrotada vai para o EXÍLIO.
- *
- * Obs.: na explicação original apareceu "Inteligência" no lugar de
- * Engenharia em uma frase. Tratamos como Engenharia porque é o único jeito
- * do ciclo fechar com as 4 cores informadas. Se "Inteligência" for um quinto
- * princípio, é só adicioná-lo aqui.
+ * Ciclo: Engenharia > QG > Infantaria > Engenharia.
+ * Realeza vence todos, mas vai para o EXÍLIO em vez do cemitério.
+ * ("Inteligência" foi tratada como Engenharia, único jeito de o ciclo fechar.)
  */
 export const PRINCIPLE_BEATS: Record<Principle, Principle[]> = {
   engenharia: ['qg'],
@@ -33,39 +29,40 @@ export const PRINCIPLE_BEATS: Record<Principle, Principle[]> = {
   realeza: ['engenharia', 'infantaria', 'qg'],
 };
 
-/** Princípios cujas cartas vão para o exílio (e não para o cemitério) ao morrer. */
+/** Princípios cujas cartas vão para o exílio (e não para o cemitério). */
 export const EXILE_ON_DEATH: Principle[] = ['realeza'];
 
 /**
- * Como a vantagem de princípio entra no combate:
- *  - 'bonus'     → quem tem vantagem soma PRINCIPLE_BONUS ao seu valor.
- *  - 'dominante' → quem tem vantagem vence o combate direto (ordem de grandeza).
+ * Como o princípio entra no confronto das frontlines:
+ *  - 'dominante' → quem tem vantagem vence a coluna direto (regra atual).
+ *  - 'bonus'     → quem tem vantagem soma PRINCIPLE_BONUS e os valores decidem.
  */
-export const PRINCIPLE_MODE: 'bonus' | 'dominante' = 'bonus';
+export const PRINCIPLE_MODE: 'dominante' | 'bonus' = 'dominante';
 export const PRINCIPLE_BONUS = 2;
 
 export const RULES = {
-  startingLife: 20,
-  startingHand: 5,
-  maxHand: 8,
-  /** Cartas de personagem que podem ser baixadas por turno. */
-  playsPerTurn: 1,
-  /** Reposicionamentos (front ↔ back ou troca de casa) por turno. */
-  movesPerTurn: 1,
-  /** Quem começa não compra nem ataca no primeiro turno. */
-  firstTurnNoDraw: true,
-  firstTurnNoAttack: true,
-  /** Carta baixada neste turno ainda não ataca. */
-  summoningSickness: true,
-  /** Front ataca a coluna da frente e as duas vizinhas. */
-  attackReach: 1,
-  /** Limite de segurança: após isso, vence quem tiver mais vida. */
-  maxTurns: 60,
-  boardColumns: 5,
+  /** Pontos para vencer. Cada campo (coluna) vencido vale 1 ponto. */
+  pointsToWin: 15,
+  /** Limite de turnos (confrontos): 15 + 14 = 29. */
+  maxTurns: 29,
+  /** Campos por lado: 5 na frontline + 5 na backline. Uma rodada = 5 turnos. */
+  columns: 5,
+  /** Personagens distribuídos por rodada (5 front + 5 back). */
+  charsPerRound: 10,
+  /** (provisório) Quando o deck acaba, o cemitério 1 é embaralhado de volta. */
+  reshuffleGraveyard: true,
+  /** (provisório) Truques/equipamentos na mão no início, compra por rodada e limite. */
+  trickHandStart: 2,
+  trickDrawPerRound: 1,
+  trickHandMax: 3,
+  /** (provisório) Cada jogador pode usar 1 truque/equipamento por turno, antes do dado. */
+  tricksPerTurn: 1,
+  /** Trocas de backlines ocultas por jogador em cada fim de turno (limite de segurança). */
+  maxSwapsPerTurn: 10,
 };
 
 /** Velocidade do bot na interface (ms entre ações). */
-export const BOT_DELAY_MS = 650;
+export const BOT_DELAY_MS = 700;
 
 export type Difficulty = 'facil' | 'medio' | 'dificil';
 export const DIFFICULTY_LABEL: Record<Difficulty, string> = {
@@ -76,8 +73,7 @@ export const DIFFICULTY_LABEL: Record<Difficulty, string> = {
 
 /** Orçamento de pensamento do bot difícil. */
 export const AI = {
-  hardTimeBudgetMs: 450,
-  hardCandidates: 6,
-  hardMinRollouts: 6,
-  rolloutTurns: 2,
+  hardTimeBudgetMs: 350,
+  hardMinRollouts: 8,
+  placeCandidates: 8,
 };

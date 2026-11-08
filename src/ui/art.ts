@@ -60,10 +60,34 @@ export function emblemSvg(p: Principle): string {
   return `<svg class="emblem" viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">${EMBLEM_PATHS[p]}</svg>`;
 }
 
+const TRICK_ART: Record<string, string> = {
+  // mapa dobrado com rota tracejada e um X
+  't-mapa-confuso': `
+    <path d="M16 26 L38 18 L62 26 L84 18 L84 76 L62 84 L38 76 L16 84 Z"/>
+    <path d="M38 18 L38 76 M62 26 L62 84"/>
+    <path d="M24 66 Q34 50 46 58 T66 44 T76 34" stroke-dasharray="4 4"/>
+    <path d="M71 29 l10 10 M81 29 l-10 10"/>
+    <path d="M28 40 q4 -6 8 0 q-4 6 -8 0 z"/>`,
+  // vara de pesca com linha e anzol
+  't-vara-de-pesca': `
+    <path d="M18 86 L72 16"/>
+    <path d="M24 78 l6 4 M30 70 l6 4"/>
+    <path d="M72 16 Q80 34 78 60"/>
+    <path d="M78 60 q0 10 -7 10 q-6 0 -6 -6"/>
+    <path d="M65 64 l-3 -3"/>
+    <path d="M14 90 L30 90"/>`,
+};
+
+export function trickSvg(id: string): string {
+  return `<svg class="emblem" viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">${TRICK_ART[id] ?? '<circle cx="50" cy="50" r="24"/>'}</svg>`;
+}
+
 export const ICON = {
   sword: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 3H21v6.5L10 20.5l-1.5-1.5L6 21.5 2.5 18 5 15.5 3.5 14z" fill="currentColor" opacity=".18"/><path d="M14.5 3H21v6.5L10 20.5 3.5 14zM6.5 15.5l2 2M5 15.5 2.5 18 6 21.5l2.5-2.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>`,
   shield: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5 20 5v6c0 5-3.4 8.7-8 10.5C7.4 19.7 4 16 4 11V5z" fill="currentColor" opacity=".18"/><path d="M12 2.5 20 5v6c0 5-3.4 8.7-8 10.5C7.4 19.7 4 16 4 11V5zM12 2.5v19" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>`,
   hourglass: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12M6 21h12M7 3c0 5 10 6 10 9s-10 4-10 9M17 3c0 5-10 6-10 9s10 4 10 9" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>`,
+  eyeOff: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6z" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="12" r="2.6" fill="currentColor"/><path d="M4 4l16 16" stroke="currentColor" stroke-width="1.8"/></svg>`,
+  lock: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" fill="currentColor"/><path d="M8 11V8a4 4 0 0 1 8 0v3" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>`,
   crown: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 18 2 7l6 5 4-7 4 7 6-5-1 11z" fill="currentColor"/></svg>`,
   heart: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20s-7.5-4.6-9.2-9.4C1.6 7.2 4 4 7.2 4c2 0 3.6 1.1 4.8 2.8C13.2 5.1 14.8 4 16.8 4 20 4 22.4 7.2 21.2 10.6 19.5 15.4 12 20 12 20z" fill="currentColor"/></svg>`,
   sound: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor"/><path d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`,

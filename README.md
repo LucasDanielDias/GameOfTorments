@@ -14,45 +14,46 @@ npm run build:single # um único index.html jogável em dist-single/
 npm run sim -- --a dificil --b medio --games 100 --budget 30   # bot × bot
 ```
 
-## O que já existe
+## Como se joga
 
-- **Tabuleiro** com 10 casas por lado (5 frontline + 5 backline). À direita da frontline, o deck de
-  personagens; à esquerda, o deck de truques/equipamentos; mais à direita, os 2 cemitérios
-  (um acima do outro); o exílio fica ao lado da backline direita. O lado do bot é espelhado.
-- **Moeda** (cara ou coroa decide quem começa) e **d6** (desempata combates).
-- **Cartas de personagem**: ATK no canto superior esquerdo (vale na frontline), DEF no canto superior
-  direito (vale na backline), descrição abaixo da imagem e a cor do princípio na moldura.
-  Todos os versos são iguais.
-- **Princípios**: Engenharia > QG > Infantaria > Engenharia. Realeza vence todos, mas vai para o exílio.
-- **Bot de treino** com 3 níveis, botão de dica e explicação das jogadas no registro.
-
-## Regras provisórias (ajustáveis em `src/config.ts`)
-
-| Regra | Valor |
+| Etapa | O que acontece |
 | --- | --- |
-| Vida inicial | 20 |
-| Mão inicial / máxima | 5 / 8 |
-| Cartas baixadas por turno | 1 |
-| Movimentos por turno | 1 (front ↔ back na mesma coluna, ou casa vizinha na mesma linha; troca se ocupada) |
-| Alcance do ataque | frontline ataca a frente da própria coluna e das vizinhas |
-| Backline | só pode ser atacada se a frente da coluna estiver vazia |
-| Ataque direto | quando a coluna do rival está toda vazia; dano = ATK |
-| Vantagem de princípio | +2 (ou modo `dominante`: vence direto) |
-| Empate no combate | cada lado rola 1d6, maior vence |
-| Perdedor do combate | cemitério 1 (Realeza → exílio) |
-| Quem começa | não compra nem ataca no 1º turno |
-| Carta recém-baixada | só ataca no turno seguinte |
+| Moeda | Quem acerta cara/coroa ganha a **iniciativa** (distribui e usa truques primeiro). Depois, a iniciativa passa para quem perdeu o último campo. |
+| Rodada | Cada jogador recebe 10 personagens e os distribui **virados**: 5 na frontline e 5 na backline. Uma rodada tem 5 turnos, um por campo. |
+| 1. Truques | Cada jogador pode usar 1 truque/equipamento (ou passar). |
+| 2. Dado | Os dois rolam o d6 (empate rola de novo). Quem tirar mais escolhe um campo livre. |
+| 3. Revelação | As frontlines daquele campo são viradas. **Vantagem de princípio vence direto.** Sem vantagem (mesmo princípio), compara ATK × ATK. |
+| 4. Backline | Quem está perdendo decide se vira a backline do campo (soma a DEF). Se virar, o vencedor decide se vira a dele. |
+| 5. Ponto | Maior total leva 1 ponto. Empate: d6 até desempatar. O campo fica travado até o fim da rodada. |
+| 6. Fim do turno | Cada jogador pode trocar de lugar as cartas da backline que ainda estão ocultas. |
+| Fim da rodada | Todas as cartas da mesa vão ao cemitério 1 (Realeza vai ao exílio). |
+| Vitória | 15 pontos. No máximo 29 turnos (15 + 14). |
 
-O deck de truques/equipamentos e o cemitério 2 já estão na mesa, aguardando as regras.
+Princípios: Engenharia > QG > Infantaria > Engenharia. Realeza vence todos.
+
+### Truques e equipamentos
+
+Não têm ATK, DEF nem princípio. Ficam num deck próprio; depois de usados vão ao cemitério 2.
+
+- **Mapa Confuso** (truque): troca uma frontline oculta sua, de campo ainda livre, pela carta do topo do seu deck.
+- **Vara de Pesca** (equipamento): escolhe uma backline oculta do rival; se for personagem, você a rouba para a sua mão.
+
+### Decisões provisórias (ajustáveis em `src/config.ts`)
+
+- Decks de 30 personagens; quando o deck acaba, o cemitério 1 volta embaralhado.
+- Truques: 2 na mão no início, +1 por rodada, máximo 3, 1 por turno, antes do dado.
+- Frontlines empatadas no ATK: quem escolheu o campo fica "à frente" e o outro decide primeiro se vira.
+- Carta roubada pela Vara de Pesca vai para a mão e entra na próxima distribuição.
 
 ## Bot de treino (`src/ai`)
 
-- **Fácil**: ações legais aleatórias.
-- **Médio**: guloso, escolhe a ação que mais melhora a avaliação imediata (`evaluate.ts`).
-- **Difícil**: Monte Carlo com determinização. Sorteia a mão escondida do rival várias vezes,
-  simula 2 turnos à frente e escolhe a ação de melhor média. Nunca olha a mão real do oponente.
+- **Fácil**: decisões aleatórias.
+- **Médio**: heurísticas (chance de cada carta na frente, defesas fortes guardadas ocultas, só vira quando muda o resultado).
+- **Difícil**: Monte Carlo. Sorteia vários mundos possíveis para as cartas ocultas do rival, joga o resto da rodada
+  com a política do Médio e escolhe a melhor média. Nunca vê as cartas viradas do oponente.
 
-Resultados atuais do simulador: Médio vence Fácil em ~100% das partidas; Difícil vence Médio em ~65–70%.
+No simulador: Médio vence Fácil em ~96%; Difícil vence Médio em ~60% mesmo com pouco tempo de pensamento.
+Partidas duram em média 26 turnos.
 
 ## Estrutura
 
