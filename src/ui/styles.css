@@ -780,3 +780,33 @@ button:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--ink-3)
 /* a faixa central não deve alargar a mesa: a largura vem da grade de casas */
 .strip { width: 0; min-width: 100%; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); }
 .strip .turn-who { text-wrap: balance; }
+
+/* ─── Mesa maior: o painel lateral só fica ao lado em telas bem largas ─── */
+.layout { grid-template-columns: minmax(0, 1fr); }
+.layout .panel { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); align-items: start; }
+@media (min-width: 1560px) {
+  .layout { grid-template-columns: minmax(0, 1fr) 300px; }
+  .layout .panel { display: flex; }
+}
+.top { padding-block: 10px 8px; }
+.layout { padding-block: 8px 18px; }
+.table { gap: 6px; }
+.strip { margin-block: 8px; padding: 8px 14px; }
+.hand.opp { min-height: 0; }
+.opp-hand-note { margin: 0; font-size: 11px; }
+
+.duel-pips { display: flex; gap: 4px; }
+.duel-pips i { width: 10px; height: 10px; border: 1px solid var(--ink-2); transform: rotate(45deg); }
+.duel-pips i.on { background: var(--gold); border-color: var(--ink); }
+.plate .life-label + .duel-pips { margin-top: 4px; }
+
+.hand.me.compact { min-height: 0; padding-top: 2px; flex-direction: column; align-items: center; gap: 6px; }
+.hand-summary { font-size: 12px; color: var(--ink-3); font-style: italic; }
+.hand-cards.mini { --cw: 46px; padding-top: 0; gap: 4px; }
+.hand-cards.mini .card { margin: 0; }
+.hand-cards.mini .card .name, .hand-cards.mini .card .ptag { display: none; }
+.placing .hand.me .hand-cards { --cw: calc(var(--cw-base, 84px) * 0.82); }
+.hand-need { flex-basis: 100%; text-align: center; font-size: 12px; color: var(--ink-3); }
+.slot .col-mark.won { font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase; padding: 2px 6px; }
+/* olho de "carta oculta": no alto, entre ATK e DEF, sem cobrir o princípio */
+.card.concealed .badge { top: calc(var(--cw) * 0.03); bottom: auto; left: 50%; right: auto; transform: translateX(-50%); }

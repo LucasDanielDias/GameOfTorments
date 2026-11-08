@@ -17,6 +17,8 @@ export interface CharacterDef {
   def: number;
   text: string;
   art?: string;
+  /** Mecânica de exílio própria: se revelada, vai ao exílio no fim da rodada. */
+  exile?: boolean;
 }
 
 export const CHARACTERS: CharacterDef[] = [
@@ -113,28 +115,28 @@ export type DeckKey = keyof typeof DECKS;
 // ─── Truques e equipamentos ───────────────────────────────────────────────
 
 export type TrickKind = 'truque' | 'equipamento';
-export type TrickTargetKind = 'ownHiddenFront' | 'enemyHiddenBack';
 
 /**
  * Cartas de truque/equipamento: não têm ATK, DEF nem princípio.
- * Cada uma tem um efeito, implementado em engine/game.ts (applyTrick).
+ * São colocadas viradas no lugar de uma backline durante a distribuição e
+ * disparam o efeito quando o dono as vira no duelo daquele campo.
+ * O efeito está implementado em engine/game.ts (triggerTrick).
  */
 export interface TrickDef {
   id: string;
   name: string;
   kind: TrickKind;
-  target: TrickTargetKind;
   text: string;
 }
 
 export const TRICKS: TrickDef[] = [
   {
-    id: 't-mapa-confuso', name: 'Mapa Confuso', kind: 'truque', target: 'ownHiddenFront',
-    text: 'Troque uma carta oculta da sua frontline (em campo ainda não disputado) pela carta do topo do seu deck.',
+    id: 't-mapa-confuso', name: 'Mapa Confuso', kind: 'truque',
+    text: 'Ao ser virado: troque a sua frontline deste campo pela carta do topo do seu deck.',
   },
   {
-    id: 't-vara-de-pesca', name: 'Vara de Pesca', kind: 'equipamento', target: 'enemyHiddenBack',
-    text: 'Escolha uma carta oculta da backline inimiga. Se for um personagem, você a rouba para a sua mão.',
+    id: 't-vara-de-pesca', name: 'Vara de Pesca', kind: 'equipamento',
+    text: 'Ao ser virado: se a backline inimiga deste campo for um personagem, você o rouba para a sua mão.',
   },
 ];
 

@@ -7,6 +7,7 @@ export interface Prefs {
   muted: boolean;
   explain: boolean;
   reduceMotion: boolean;
+  showTips: boolean;
 }
 
 export interface Record_ {
@@ -14,10 +15,10 @@ export interface Record_ {
   losses: number;
 }
 
-const PREFS_KEY = 'got.prefs.v1';
+const PREFS_KEY = 'got.prefs.v2';
 const STATS_KEY = 'got.stats.v1';
 
-const DEFAULT_PREFS: Prefs = { difficulty: 'medio', muted: false, explain: true, reduceMotion: false };
+const DEFAULT_PREFS: Prefs = { difficulty: 'medio', muted: false, explain: true, reduceMotion: false, showTips: false };
 
 export function loadPrefs(): Prefs {
   try {

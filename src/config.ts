@@ -29,7 +29,7 @@ export const PRINCIPLE_BEATS: Record<Principle, Principle[]> = {
   realeza: ['engenharia', 'infantaria', 'qg'],
 };
 
-/** Princípios cujas cartas vão para o exílio (e não para o cemitério). */
+/** Princípios cujas cartas, se REVELADAS, vão para o exílio no fim da rodada (ocultas vão ao cemitério). */
 export const EXILE_ON_DEATH: Principle[] = ['realeza'];
 
 /**
@@ -41,23 +41,27 @@ export const PRINCIPLE_MODE: 'dominante' | 'bonus' = 'dominante';
 export const PRINCIPLE_BONUS = 2;
 
 export const RULES = {
-  /** Pontos para vencer. Cada campo (coluna) vencido vale 1 ponto. */
+  /** Pontos para vencer. Cada RODADA vencida vale 1 ponto. */
   pointsToWin: 15,
-  /** Limite de turnos (confrontos): 15 + 14 = 29. */
-  maxTurns: 29,
-  /** Campos por lado: 5 na frontline + 5 na backline. Uma rodada = 5 turnos. */
+  /** Limite de rodadas: 15 + 14 = 29. */
+  maxRounds: 29,
+  /** Campos por lado: 5 na frontline + 5 na backline. */
   columns: 5,
-  /** Personagens distribuídos por rodada (5 front + 5 back). */
+  /** Duelos vencidos para levar a rodada (maioria de 5). A rodada tem de 3 a 5 duelos. */
+  duelsToWinRound: 3,
+  /** Personagens na mão a cada distribuição (completa até este número). */
   charsPerRound: 10,
   /** (provisório) Quando o deck acaba, o cemitério 1 é embaralhado de volta. */
   reshuffleGraveyard: true,
-  /** (provisório) Truques/equipamentos na mão no início, compra por rodada e limite. */
+  /** (provisório) Truques/equipamentos na mão no início da partida. */
   trickHandStart: 2,
-  trickDrawPerRound: 1,
-  trickHandMax: 3,
-  /** (provisório) Cada jogador pode usar 1 truque/equipamento por turno, antes do dado. */
-  tricksPerTurn: 1,
-  /** Trocas de backlines ocultas por jogador em cada fim de turno (limite de segurança). */
+  /** Quem perde no cara ou coroa compra este número de truques a mais no início. */
+  coinLoserExtraTricks: 1,
+  /** No início de cada rodada, compra 1 truque por duelo perdido na rodada anterior. */
+  trickDrawPerDuelLost: 1,
+  /** Limite de segurança da mão de truques. */
+  trickHandMax: 20,
+  /** Trocas de backlines ocultas por jogador em cada fim de duelo (limite de segurança). */
   maxSwapsPerTurn: 10,
 };
 
