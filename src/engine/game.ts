@@ -23,8 +23,8 @@ import { rand, rollD6, shuffle } from './rng';
  *                 3) quem está perdendo decide se vira a backline do campo;
  *                    se virar, o outro decide se vira a dele.
  *                    Personagem virado soma a DEF; truque virado dispara o efeito.
- *                    Personagem virado pode trocar de lugar com a frontline, se o
- *                    princípio dele não vencer o da frontline rival.
+ *                    Personagem virado pode trocar de lugar com a frontline (sempre);
+ *                    aí ele disputa com a DEF e a frontline antiga soma a DEF dela.
  *                 4) maior total vence o duelo; empate → d6 até desempatar
  *                 5) fim do duelo: cada um decide se troca de lugar as backlines ocultas
  *                    dos campos que ainda não lutaram (campo disputado fica travado)
@@ -457,9 +457,12 @@ export function duelStanding(s: GameState, col: number): DuelStanding {
   const x0 = passiveExtras(s, 0, col, base.byPrinciple && base.leader === 1);
   const x1 = passiveExtras(s, 1, col, base.byPrinciple && base.leader === 0);
   const cmp = (x0.noPrinciple || x1.noPrinciple) && !mods.noPrinciple ? compareFronts(f0, f1, { ...mods, noPrinciple: true }) : base;
+  // depois da troca backline ↔ frontline, quem veio de trás disputa com a DEF
+  const swap = (pid: PlayerId, f: CardInst) =>
+    s.clash && s.clash.col === col && s.clash.exchanged[pid] ? getDef(f.defId).def - getDef(f.defId).atk : 0;
   const totals: [number, number] = [
-    cmp.values[0] + x0.atk + x0.def + backBonus(s, 0, col),
-    cmp.values[1] + x1.atk + x1.def + backBonus(s, 1, col),
+    cmp.values[0] + swap(0, f0) + x0.atk + x0.def + backBonus(s, 0, col),
+    cmp.values[1] + swap(1, f1) + x1.atk + x1.def + backBonus(s, 1, col),
   ];
   if (cmp.byPrinciple) return { leader: cmp.leader, byPrinciple: true, totals };
   return { leader: totals[0] > totals[1] ? 0 : totals[1] > totals[0] ? 1 : null, byPrinciple: false, totals };
@@ -662,17 +665,15 @@ function onFrontsRevealed(s: GameState, col: number, events: GameEvent[]) {
 
 /**
  * Troca backline ↔ frontline: depois de virar um PERSONAGEM da backline, o dono pode
- * colocá-lo na frente do duelo, desde que o princípio dele NÃO vença o da frontline
- * rival. A frontline antiga vai para a backline (virada) e passa a somar a DEF dela.
+ * colocá-lo na frente do duelo, em qualquer situação. A carta que veio de trás
+ * disputa com a DEF dela (não com o ATK), e a frontline antiga, agora atrás,
+ * soma a DEF dela, como toda backline virada.
  */
 export function canExchange(s: GameState, pid: PlayerId): boolean {
   const c = s.clash;
   if (!c || !c.flipped[pid] || c.exchanged[pid]) return false;
   const back = s.players[pid].back[c.col];
-  const opFront = s.players[other(pid)].front[c.col];
-  if (!back || !back.revealed || isTrick(back.card.defId) || !opFront) return false;
-  const opP: Principle = c.mods.royal[other(pid)] ? 'realeza' : principleOf(opFront.card);
-  return !beats(principleOf(back.card), opP);
+  return !!back && back.revealed && !isTrick(back.card.defId);
 }
 
 /** Depois que `pid` decidiu (virar e, se for o caso, trocar), passa a vez ou vai à apuração. */

@@ -314,7 +314,7 @@ describe('regras de distribuição e compra', () => {
 });
 
 describe('troca backline ↔ frontline', () => {
-  it('personagem virado pode ir para a frente se o princípio dele não vencer o do rival', () => {
+  it('personagem virado pode ir para a frente e disputa com a DEF', () => {
     const s = placed(40);
     // eu: Escudeiro (Inf, ATK 2) na frente, Berserker (Inf, ATK 6) atrás; rival: Lanceiro (Inf, ATK 4)
     setColumn(s, 1, 'i-escudeiro', 'i-lanceiro', 'i-berserker');
@@ -326,17 +326,34 @@ describe('troca backline ↔ frontline', () => {
     expect(getDefName(s.players[0].front[1]!.card)).toBe('i-berserker');
     expect(getDefName(s.players[0].back[1]!.card)).toBe('i-escudeiro');
     settle(s);
-    // Berserker ATK 6 + DEF do Escudeiro 6 = 12 × 4
+    // depois da troca: Berserker disputa com DEF 1 + DEF do Escudeiro 6 = 7 × 4
     expect(s.columns[1].winner).toBe(0);
   });
 
-  it('não pode trocar se o princípio da backline vencer a frontline rival', () => {
+  it('a troca vale em qualquer situação, mesmo se a backline vencer o rival no princípio', () => {
     const s = placed(41);
-    // rival: Escudeiro (Infantaria); minha backline: Capitão (QG) vence Infantaria → sem troca
-    setColumn(s, 2, 'i-batedora', 'i-berserker', 'q-capitao');
+    setColumn(s, 2, 'i-batedora', 'i-berserker', 'q-capitao'); // Capitão (QG) vence Infantaria
     applyAction(s, { type: 'choose', col: 2 });
     applyAction(s, { type: 'flip', flip: true });
-    expect(s.phase).not.toBe('exchange');
+    expect(s.phase).toBe('exchange');
+    applyAction(s, { type: 'exchange', exchange: true });
+    settle(s);
+    expect(s.columns[2].winner).toBe(0); // agora é QG contra Infantaria
+  });
+
+  it('exemplo das regras: QG perde para Engenharia, troca e vence pela defesa', () => {
+    const s = placed(42);
+    // eu: Capitão (QG 3/5) na frente, Artífice (Engenharia 2/5) atrás; rival: Balista (Engenharia 5/2)
+    setColumn(s, 3, 'q-capitao', 'e-balista', 'e-artifice');
+    applyAction(s, { type: 'choose', col: 3 });
+    applyAction(s, { type: 'flip', flip: true });
+    expect(duelStanding(s, 3).byPrinciple).toBe(true); // ainda perdendo pelo princípio
+    applyAction(s, { type: 'exchange', exchange: true });
+    const st = duelStanding(s, 3);
+    expect(st.byPrinciple).toBe(false); // Engenharia × Engenharia
+    expect(st.totals).toEqual([10, 5]); // DEF do Artífice 5 + DEF do Capitão 5 × ATK da Balista 5
+    settle(s);
+    expect(s.columns[3].winner).toBe(0);
   });
 });
 
