@@ -29,7 +29,7 @@ for (let g = 1; g <= games; g++) {
   // alterna lados: metade das partidas com A no assento 0
   const swap = g % 2 === 0;
   const s = swap ? playMatch(b, a, g, { budgetMs: budget }) : playMatch(a, b, g, { budgetMs: budget });
-  turns += s.turnTotal;
+  turns += s.round;
   if (s.winner === 'empate') draws++;
   else {
     const aWon = swap ? s.winner === 1 : s.winner === 0;
@@ -43,4 +43,4 @@ for (let g = 1; g <= games; g++) {
 const pct = (n: number) => `${((100 * n) / games).toFixed(1)}%`;
 console.log(`\n${a} × ${b} — ${games} partidas (${((Date.now() - t0) / 1000).toFixed(1)}s)`);
 console.log(`  ${a}: ${winsA} (${pct(winsA)})   ${b}: ${winsB} (${pct(winsB)})   empates: ${draws}`);
-console.log(`  turnos (confrontos) médios: ${(turns / games).toFixed(1)}   quem ganha a moeda vence: ${pct(starterWins)}`);
+console.log(`  rodadas médias: ${(turns / games).toFixed(1)}   quem ganha a moeda vence: ${pct(starterWins)}`);

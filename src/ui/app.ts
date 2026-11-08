@@ -13,13 +13,12 @@ import { createBot, describeAction, heuristicPlace, type Bot, type BotDecision }
 import { getDef, getTrick, isTrick } from '../engine/cards';
 import {
   applyAction,
-  compareFronts,
+  duelStanding,
   findCard,
   newGame,
   openColumns,
-  sideTotal,
+  requiredBack,
   swapPairs,
-  trickTargets,
   validatePlace,
   type Action,
   type CardInst,
@@ -40,19 +39,13 @@ const ROW_PT: Record<Row, string> = { front: 'frontline', back: 'backline' };
 const PHASE_PT: Record<GameState['phase'], string> = {
   coin: 'Cara ou coroa',
   place: 'Distribuição',
-  trick: 'Truques',
   choose: 'Escolha do campo',
   flip: 'Virar backline?',
-  swap: 'Fim do turno',
+  swap: 'Fim do duelo',
   over: 'Fim de jogo',
 };
 
-type Sel =
-  | { kind: 'hand'; uid: number }
-  | { kind: 'draft'; row: Row; col: number }
-  | { kind: 'trick'; uid: number }
-  | { kind: 'swap'; col: number }
-  | null;
+type Sel = { kind: 'hand'; uid: number } | { kind: 'draft'; row: Row; col: number } | { kind: 'swap'; col: number } | null;
 type PileKind = 'deck' | 'tricks' | 'grave' | 'graveTricks' | 'exile';
 type Draft = { front: (number | null)[]; back: (number | null)[] };
 
@@ -84,7 +77,6 @@ export class App {
     sound.muted = this.prefs.muted;
     this.build();
     this.bind();
-    this.resize();
     new ResizeObserver(() => this.resize()).observe(this.el.table);
     window.addEventListener('resize', () => this.resize());
     const hot = (window as unknown as { claude?: { hot?: { snapshot?: (fn: () => unknown) => void } } }).claude?.hot;
@@ -187,16 +179,27 @@ export class App {
     });
   }
 
+  /**
+   * Tamanho das cartas: a mesa ocupa a largura disponível e o máximo de
+   * altura da tela. Na distribuição sobra espaço para a mão logo abaixo.
+   */
   private resize() {
     const table = this.el.table;
+    if (!table) return;
     const narrow = table.clientWidth < 640;
     const gap = narrow ? 3 : 8;
     const pad = narrow ? 6 : 14;
     const availW = table.clientWidth - 2 * pad - 2 - 8 * gap;
     let cw = Math.floor(availW / 9);
-    if (window.innerWidth > 980) cw = Math.min(cw, Math.floor((window.innerHeight - 350) / 7.7));
-    cw = Math.max(28, Math.min(104, cw));
+    if (!narrow) {
+      const placing = this.s?.phase === 'place' && this.s.actor === ME;
+      const chrome = 300 + (placing ? 40 : 0);
+      const rows = 5.6 + (placing ? 1.4 * 0.82 : 0);
+      cw = Math.min(cw, Math.floor((window.innerHeight - chrome) / rows));
+    }
+    cw = Math.max(28, Math.min(150, cw));
     this.root.style.setProperty('--cw', `${cw}px`);
+    this.root.style.setProperty('--cw-base', `${cw}px`);
     this.root.style.setProperty('--gap', `${gap}px`);
     this.root.style.setProperty('--mat-pad', `${pad}px`);
     this.el['app-root'].classList.toggle('tiny', cw < 62);
@@ -205,7 +208,7 @@ export class App {
   // ─── Partida ───────────────────────────────────────────────────────────
 
   start(restore?: { s?: GameState; log?: LogItem[] }) {
-    if (restore?.s && 'columns' in restore.s) {
+    if (restore?.s && 'duelInRound' in restore.s) {
       this.s = restore.s;
       this.log = restore.log ?? [];
       this.matchId++;
@@ -315,6 +318,8 @@ export class App {
     } else {
       this.hint = { d, text: describeAction(this.s, d.action) };
     }
+    this.prefs.showTips = true;
+    savePrefs(this.prefs);
     this.render();
   }
 
@@ -343,24 +348,14 @@ export class App {
       return this.showPile(Number(pid) as PlayerId, kind as PileKind);
     }
 
-    const trickEl = t.closest<HTMLElement>('[data-trick]');
-    if (trickEl) {
-      const uid = Number(trickEl.dataset.trick);
-      this.inspectUid = uid;
-      if (this.myMove() && this.s.phase === 'trick') {
-        const card = this.s.players[ME].trickHand.find((c) => c.uid === uid)!;
-        if (!trickTargets(this.s, ME, card.defId).length) this.toast('Este truque não tem alvo válido agora.');
-        else this.sel = this.sel?.kind === 'trick' && this.sel.uid === uid ? null : { kind: 'trick', uid };
-      } else if (this.myMove()) this.toast('Truques só na fase de truques, antes do dado.');
-      return this.render();
-    }
-
     const handCard = t.closest<HTMLElement>('[data-hand]');
     if (handCard) {
       const uid = Number(handCard.dataset.hand);
       this.inspectUid = uid;
       if (this.myMove() && this.s.phase === 'place') {
         this.sel = this.sel?.kind === 'hand' && this.sel.uid === uid ? null : { kind: 'hand', uid };
+      } else if (this.myMove()) {
+        this.toast('Cartas da mão só entram na mesa na distribuição, no início da rodada.');
       }
       return this.render();
     }
@@ -375,7 +370,7 @@ export class App {
   private onAct(act: string, el: HTMLElement) {
     switch (act) {
       case 'new':
-        if (this.s.phase !== 'over' && this.s.turnTotal > 2) return this.confirmNew();
+        if (this.s.phase !== 'over' && this.s.round > 1) return this.confirmNew();
         return this.newMatch();
       case 'new-confirm':
         return this.newMatch();
@@ -384,6 +379,10 @@ export class App {
       case 'mute':
         this.prefs.muted = !this.prefs.muted;
         sound.muted = this.prefs.muted;
+        savePrefs(this.prefs);
+        return this.render();
+      case 'tips':
+        this.prefs.showTips = !this.prefs.showTips;
         savePrefs(this.prefs);
         return this.render();
       case 'hint':
@@ -410,8 +409,6 @@ export class App {
         this.draft = null;
         return void this.act(a);
       }
-      case 'pass':
-        return void this.act({ type: 'pass' });
       case 'flip-yes':
         return void this.act({ type: 'flip', flip: true });
       case 'flip-no':
@@ -419,6 +416,10 @@ export class App {
       case 'done':
         return void this.act({ type: 'done' });
     }
+  }
+
+  private isTrickUid(uid: number) {
+    return this.s.players[ME].trickHand.some((c) => c.uid === uid);
   }
 
   private onSlot(pid: PlayerId, row: Row, col: number) {
@@ -436,25 +437,27 @@ export class App {
         if (pid !== ME || !this.draft) break;
         const here = this.draft[row][col];
         if (this.sel?.kind === 'hand' && here === null) {
+          if (row === 'front' && this.isTrickUid(this.sel.uid)) {
+            this.toast('Truques e equipamentos só podem ir para a backline.');
+            break;
+          }
           this.draft[row][col] = this.sel.uid;
           this.sel = null;
         } else if (this.sel?.kind === 'draft') {
           const from = this.sel;
           const moving = this.draft[from.row][from.col];
+          const trickToFront = (row === 'front' && moving !== null && this.isTrickUid(moving)) || (from.row === 'front' && here !== null && this.isTrickUid(here));
+          if (trickToFront) {
+            this.toast('Truques e equipamentos só podem ir para a backline.');
+            this.sel = null;
+            break;
+          }
           this.draft[from.row][from.col] = here;
           this.draft[row][col] = moving;
           this.sel = null;
         } else if (here !== null) {
           this.sel = { kind: 'draft', row, col };
         }
-        break;
-      }
-      case 'trick': {
-        if (this.sel?.kind !== 'trick') break;
-        const card = s.players[ME].trickHand.find((c) => c.uid === (this.sel as { uid: number }).uid)!;
-        const ok = trickTargets(s, ME, card.defId).some((t) => t.side === pid && t.row === row && t.col === col);
-        if (ok) return void this.act({ type: 'trick', uid: card.uid, target: { side: pid, row, col } });
-        this.toast(getTrick(card.defId).target === 'ownHiddenFront' ? 'Escolha uma frontline sua, oculta, em campo livre.' : 'Escolha uma backline oculta do bot.');
         break;
       }
       case 'choose':
@@ -490,10 +493,12 @@ export class App {
     let rerender = false;
     for (const ev of events) {
       switch (ev.kind) {
-        case 'roll':
+        case 'roll': {
           await this.rollDice(ev.rolls);
-          this.diceText = `d6: você ${ev.rolls.at(-1)![0]} × ${ev.rolls.at(-1)![1]} bot${ev.rolls.length > 1 ? ' (após empate)' : ''} · ${ev.chooser === ME ? 'você escolhe o campo' : 'o bot escolhe o campo'}`;
+          const [a, b] = ev.rolls[ev.rolls.length - 1];
+          this.diceText = `d6: você ${a} × ${b} bot${ev.rolls.length > 1 ? ' (após empate)' : ''} · ${ev.chooser === ME ? 'você escolhe o campo' : 'o bot escolhe o campo'}`;
           break;
+        }
         case 'reveal':
           ev.uids.forEach((u) => this.fx.set(u, 'flip-in'));
           sound.play('card');
@@ -504,9 +509,22 @@ export class App {
             this.fx.set(ev.uid, 'flip-in');
             sound.play('card');
             this.render();
-            await wait(500);
+            await wait(550);
           }
           break;
+        case 'trigger': {
+          sound.play('move');
+          if (ev.newUid) this.fx.set(ev.newUid, 'flip-in');
+          const name = getTrick(ev.defId).name;
+          const who = ev.player === ME ? 'Você' : 'O bot';
+          const stolen = ev.stolenUid ? findCard(this.s, ev.stolenUid) : null;
+          if (ev.result === 'roubou' && stolen) this.toast(`${who} pescou ${getDef(stolen.defId).name} com a ${name}!`);
+          else if (ev.result === 'trocou') this.toast(`${who} usou ${name}: frontline trocada pelo topo do deck.`);
+          else this.toast(`${name} não pescou nenhum personagem.`);
+          this.render();
+          await wait(700);
+          break;
+        }
         case 'result':
           if (rerender) {
             this.render();
@@ -520,31 +538,27 @@ export class App {
           sound.play(ev.winner === ME ? 'coin' : 'hit');
           this.pulse.add(`plate:${ev.winner}`);
           break;
-        case 'trick':
-          sound.play('move');
-          if (ev.newUid) this.fx.set(ev.newUid, 'enter');
-          if (ev.player === BOT) {
-            const name = getTrick(ev.defId).name;
-            const stolen = ev.revealedUid ? findCard(this.s, ev.revealedUid) : null;
-            this.toast(ev.result === 'roubou' && stolen ? `O bot usou ${name} e roubou ${getDef(stolen.defId).name} da sua backline!` : `O bot usou ${name}.`);
-          }
-          break;
         case 'swap':
           sound.play('move');
           break;
         case 'roundEnd':
           this.render();
-          await wait(500);
-          sound.play('break');
+          await wait(900);
+          sound.play(ev.winner === ME ? 'win' : 'break');
+          this.toast(`Rodada ${ev.round}: ${ev.winner === ME ? 'sua' : 'do bot'}! Placar ${ev.points[0]} × ${ev.points[1]}.`);
           this.pulse.add(`${ME}:grave`).add(`${BOT}:grave`);
           break;
         case 'placed':
           if (ev.player === BOT) sound.play('card');
           break;
-        case 'turn':
+        case 'duel':
           if (this.s.actor === ME) sound.play('turn');
           break;
       }
+    }
+    if (rerender) {
+      this.render();
+      await wait(500);
     }
   }
 
@@ -582,7 +596,7 @@ export class App {
           <div class="coin-face">${coinSvg('cara')}</div>
           <div class="coin-face tails">${coinSvg('coroa')}</div>
         </div></div>
-        <p id="coin-text">Quem acertar ganha a iniciativa: distribui as cartas e usa truques primeiro. Depois, a cada campo perdido, a iniciativa passa para quem perdeu.</p>
+        <p id="coin-text">Quem acertar ganha a iniciativa. Quem errar compra ${RULES.coinLoserExtraTricks} truque a mais no início.</p>
         <div class="row" id="coin-buttons">
           <button class="btn" data-act="coin" data-call="cara">Cara</button>
           <button class="btn" data-act="coin" data-call="coroa">Coroa</button>
@@ -603,7 +617,9 @@ export class App {
     sound.play('coin');
     await sleep(this.prefs.reduceMotion ? 100 : 1450);
     if (id !== this.matchId) return;
-    this.q('#coin-text')!.textContent = `Você pediu ${call}, deu ${ev.result}. ${ev.winner === ME ? 'A iniciativa é sua.' : 'A iniciativa é do bot.'}`;
+    this.q('#coin-text')!.textContent =
+      `Você pediu ${call}, deu ${ev.result}. ` +
+      (ev.winner === ME ? 'A iniciativa é sua; o bot compra 1 truque a mais.' : 'A iniciativa é do bot; você compra 1 truque a mais.');
     this.q('#coin-buttons')!.innerHTML = `<button class="btn" id="coin-go">Para a mesa</button>`;
     this.logEvents(events);
     this.busy = false;
@@ -631,9 +647,9 @@ export class App {
     const title = w === ME ? 'Vitória' : w === BOT ? 'Derrota' : 'Empate';
     this.openOverlay(`
       <div class="modal" role="dialog" aria-label="${title}">
-        <div class="eyebrow">Fim da partida · ${this.s.turnTotal} turnos</div>
+        <div class="eyebrow">Fim da partida · ${this.s.round} rodadas</div>
         <h2>${title}</h2>
-        <p>Placar final: você ${me.points} × ${bot.points} bot.
+        <p>Placar final em rodadas: você ${me.points} × ${bot.points} bot.
         No nível ${DIFFICULTY_LABEL[this.prefs.difficulty]}: ${rec.wins} vitória(s), ${rec.losses} derrota(s).</p>
         <div class="row">
           <button class="btn" data-act="new-confirm">Jogar de novo</button>
@@ -696,7 +712,7 @@ export class App {
 
   private pushLog(cls: string, text: string) {
     this.log.push({ cls, text });
-    if (this.log.length > 400) this.log.splice(0, this.log.length - 400);
+    if (this.log.length > 500) this.log.splice(0, this.log.length - 500);
   }
 
   private logEvents(events: GameEvent[]) {
@@ -722,26 +738,16 @@ export class App {
           this.pushLog(cls(ev.player), `${who(ev.player)} recebeu ${ev.uids.length} personagem(ns).`);
           break;
         case 'trickDraw':
-          this.pushLog(cls(ev.player), `${who(ev.player)} comprou ${ev.uids.length} truque(s)/equipamento(s).`);
+          this.pushLog(cls(ev.player), `${who(ev.player)} comprou ${ev.uids.length} truque(s)/equipamento(s)${ev.extra ? ` (${ev.extra} a mais por perder na moeda)` : ''}.`);
           break;
         case 'placed':
           this.pushLog(cls(ev.player), `${who(ev.player)} distribuiu as cartas viradas.`);
           break;
-        case 'turn':
-          this.pushLog('turn-mark', `Turno ${ev.turn}/5 · confronto ${ev.total} de até ${RULES.maxTurns}`);
+        case 'duel':
+          this.pushLog('turn-mark', `Duelo ${ev.duel} da rodada ${ev.round}`);
           break;
-        case 'pass':
-          this.pushLog(cls(ev.player), `${who(ev.player)} passou os truques.`);
-          break;
-        case 'trick': {
-          const name = getTrick(ev.defId).name;
-          const where = `${ROW_PT[ev.target.row]} ${ev.target.side === ev.player ? 'própria' : 'rival'}, campo ${ev.target.col + 1}`;
-          const res = ev.result === 'roubou' ? `: roubou ${nm(ev.revealedUid)}` : ev.result === 'trocou' ? ': carta trocada pelo topo do deck' : ': não era personagem';
-          this.pushLog(cls(ev.player), `${who(ev.player)} usou ${name} (${where})${res}.`);
-          break;
-        }
         case 'roll': {
-          const [a, b] = ev.rolls.at(-1)!;
+          const [a, b] = ev.rolls[ev.rolls.length - 1];
           this.pushLog('', `d6: você ${a} × ${b} bot${ev.rolls.length > 1 ? ' (após empate)' : ''}.`);
           break;
         }
@@ -750,31 +756,44 @@ export class App {
           break;
         case 'reveal': {
           const [a, b] = ev.uids.map((u) => findCard(this.s, u)!);
-          const pa = PRINCIPLE_LABEL[getDef(a.defId).principle];
-          const pb = PRINCIPLE_LABEL[getDef(b.defId).principle];
-          this.pushLog('', `Revelação: ${getDef(a.defId).name} (${pa}, ATK ${getDef(a.defId).atk}) × ${getDef(b.defId).name} (${pb}, ATK ${getDef(b.defId).atk})${ev.byPrinciple ? ` → vantagem de princípio para ${ev.leader === ME ? 'você' : 'o bot'}` : ''}.`);
+          const da = getDef(a.defId);
+          const db = getDef(b.defId);
+          this.pushLog('', `Revelação: ${da.name} (${PRINCIPLE_LABEL[da.principle]}, ATK ${da.atk}) × ${db.name} (${PRINCIPLE_LABEL[db.principle]}, ATK ${db.atk})${ev.byPrinciple ? ` → vantagem de princípio para ${ev.leader === ME ? 'você' : 'o bot'}` : ''}.`);
           break;
         }
-        case 'flip':
-          this.pushLog(cls(ev.player), ev.flipped ? `${who(ev.player)} virou a backline: ${nm(ev.uid)} (DEF ${ev.uid ? getDef(findCard(this.s, ev.uid)!.defId).def : '?'}).` : `${who(ev.player)} não virou a backline.`);
+        case 'flip': {
+          if (!ev.flipped) {
+            this.pushLog(cls(ev.player), `${who(ev.player)} não virou a backline.`);
+            break;
+          }
+          const c = ev.uid ? findCard(this.s, ev.uid) : null;
+          const what = c && !isTrick(c.defId) ? `${getDef(c.defId).name} (+DEF ${getDef(c.defId).def})` : nm(ev.uid);
+          this.pushLog(cls(ev.player), `${who(ev.player)} virou a backline: ${what}.`);
           break;
+        }
+        case 'trigger': {
+          const name = getTrick(ev.defId).name;
+          const res = ev.result === 'roubou' ? `pescou ${nm(ev.stolenUid)} da backline rival` : ev.result === 'trocou' ? `trocou ${nm(ev.oldUid)} por ${nm(ev.newUid)} na frontline` : 'não pegou nenhum personagem';
+          this.pushLog(cls(ev.player), `${name}: ${res}.`);
+          break;
+        }
         case 'result': {
           const why = ev.reason === 'principio' ? 'princípio' : ev.reason === 'dados' ? `empate em ${ev.totals[0]}, decidido no d6` : `${ev.totals[0]} × ${ev.totals[1]}`;
-          this.pushLog('big', `Campo ${ev.col + 1}: ponto ${ev.winner === ME ? 'seu' : 'do bot'} (${why}).`);
+          this.pushLog('big', `Campo ${ev.col + 1}: duelo ${ev.winner === ME ? 'seu' : 'do bot'} (${why}). Duelos na rodada: ${ev.duelWins[0]} × ${ev.duelWins[1]}.`);
           break;
         }
-        case 'point':
-          break;
         case 'swap':
           this.pushLog(cls(ev.player), `${who(ev.player)} trocou de lugar as backlines dos campos ${ev.a + 1} e ${ev.b + 1}.`);
           break;
         case 'swapDone':
           break;
-        case 'roundEnd':
-          this.pushLog('', `Fim da rodada ${ev.round}: todas as cartas da mesa foram ao cemitério${ev.moved.some((m) => m.to === 'exilio') ? ' (Realeza ao exílio)' : ''}.`);
+        case 'roundEnd': {
+          const ex = ev.moved.filter((m) => m.to === 'exilio').length;
+          this.pushLog('big', `Rodada ${ev.round} ${ev.winner === ME ? 'sua' : 'do bot'}! Placar: ${ev.points[0]} × ${ev.points[1]}. Cartas da mesa ao cemitério${ex ? `; ${ex} Realeza(s) revelada(s) ao exílio` : ''}.`);
           break;
+        }
         case 'win':
-          this.pushLog('big', ev.winner === 'empate' ? `Empate (${ev.reason}).` : `${ev.winner === ME ? 'Você venceu' : 'O bot venceu'} (${ev.reason}).`);
+          this.pushLog('big', ev.winner === 'empate' ? `Empate (${ev.reason}).` : `${ev.winner === ME ? 'Você venceu' : 'O bot venceu'} a partida (${ev.reason}).`);
           break;
       }
     }
@@ -784,6 +803,8 @@ export class App {
 
   render() {
     if (!this.s) return;
+    this.el['app-root'].classList.toggle('placing', this.s.phase === 'place' && this.s.actor === ME);
+    this.resize();
     this.renderSides();
     this.renderHands();
     this.renderStrip();
@@ -797,19 +818,18 @@ export class App {
     this.pulse.clear();
   }
 
-  /** Conjunto de destaques (chaves "pid:row:col") para a fase atual. */
   private highlights() {
     const s = this.s;
-    const h = { play: new Set<string>(), choose: new Set<number>(), trick: new Set<string>(), swap: new Set<string>(), hinted: new Set<string>() };
+    const h = { play: new Set<string>(), choose: new Set<number>(), swap: new Set<string>(), hinted: new Set<string>() };
     if (this.myMove()) {
       if (s.phase === 'place' && this.sel?.kind === 'hand' && this.draft) {
-        for (const row of ['front', 'back'] as Row[]) this.draft[row].forEach((u, c) => u === null && h.play.add(`${ME}:${row}:${c}`));
+        const trick = this.isTrickUid(this.sel.uid);
+        for (const row of ['front', 'back'] as Row[]) {
+          if (trick && row === 'front') continue;
+          this.draft[row].forEach((u, c) => u === null && h.play.add(`${ME}:${row}:${c}`));
+        }
       }
       if (s.phase === 'choose') openColumns(s).forEach((c) => h.choose.add(c));
-      if (s.phase === 'trick' && this.sel?.kind === 'trick') {
-        const card = s.players[ME].trickHand.find((c) => c.uid === (this.sel as { uid: number }).uid);
-        if (card) for (const t of trickTargets(s, ME, card.defId)) h.trick.add(`${t.side}:${t.row}:${t.col}`);
-      }
       if (s.phase === 'swap') {
         for (const [a, b] of swapPairs(s, ME)) {
           h.swap.add(`${ME}:back:${a}`);
@@ -817,23 +837,23 @@ export class App {
         }
       }
     }
-    if (this.hint && this.myMove()) {
+    if (this.hint && this.myMove() && this.prefs.showTips) {
       const a = this.hint.d.action;
       if (a.type === 'choose') ['front', 'back'].forEach((r) => [ME, BOT].forEach((p) => h.hinted.add(`${p}:${r}:${a.col}`)));
-      if (a.type === 'trick') {
-        h.hinted.add(`trick:${a.uid}`);
-        h.hinted.add(`${a.target.side}:${a.target.row}:${a.target.col}`);
-      }
       if (a.type === 'swap') {
         h.hinted.add(`${ME}:back:${a.a}`);
         h.hinted.add(`${ME}:back:${a.b}`);
       }
       if (a.type === 'flip') h.hinted.add(a.flip ? 'act:flip-yes' : 'act:flip-no');
-      if (a.type === 'pass') h.hinted.add('act:pass');
       if (a.type === 'done') h.hinted.add('act:done');
       if (a.type === 'place') h.hinted.add('act:confirm');
     }
     return h;
+  }
+
+  private draftCard(uid: number): CardInst | undefined {
+    const p = this.s.players[ME];
+    return p.hand.find((x) => x.uid === uid) ?? p.trickHand.find((x) => x.uid === uid);
   }
 
   private renderSides() {
@@ -855,7 +875,6 @@ export class App {
           const slotCls = ['slot', row];
           if (h.play.has(key)) slotCls.push('can-play');
           if (h.choose.has(c)) slotCls.push('can-choose');
-          if (h.trick.has(key)) slotCls.push('target-trick');
           if (h.swap.has(key)) slotCls.push('can-swap');
           if (this.sel?.kind === 'swap' && mine && row === 'back' && this.sel.col === c) slotCls.push('selected');
           if (this.sel?.kind === 'draft' && mine && this.sel.row === row && this.sel.col === c) slotCls.push('selected');
@@ -866,7 +885,7 @@ export class App {
           let inner = `<span class="slot-label">${row === 'front' ? 'Front' : 'Back'}<br>${c + 1}</span>`;
           const draftUid = mine && this.draft ? this.draft[row][c] : null;
           if (draftUid !== null) {
-            const card = s.players[ME].hand.find((x) => x.uid === draftUid);
+            const card = this.draftCard(draftUid);
             if (card) inner = cardHtml(card, { row, cls: ['concealed'], badge: ICON.eyeOff });
           } else {
             const x = p[row][c];
@@ -880,9 +899,7 @@ export class App {
             }
           }
           let mark = '';
-          if (row === 'front' && colState?.resolved) {
-            mark = `<span class="col-mark ${colState.winner === pid ? 'won' : 'lost'}">${colState.winner === pid ? '+1' : ''}</span>`;
-          }
+          if (row === 'front' && colState?.resolved && colState.winner === pid) mark = `<span class="col-mark won">duelo</span>`;
           at(3 + c, rowLine[row], `<div class="${slotCls.join(' ')}" data-slot="${pid}:${row}:${c}" aria-label="${ROW_PT[row]} ${c + 1}">${inner}${mark}</div>`);
         }
       }
@@ -912,12 +929,14 @@ export class App {
     const pct = Math.min(100, (p.points / RULES.pointsToWin) * 100);
     const cls = ['plate'];
     if (this.pulse.has(`plate:${pid}`)) cls.push('scored');
+    const pips = Array.from({ length: RULES.duelsToWinRound }, (_, i) => `<i class="${i < p.duelWins ? 'on' : ''}"></i>`).join('');
     return `<div class="${cls.join(' ')}" data-plate="${pid}" style="height:100%">
       <div class="who">${pid === ME ? 'Você' : 'Bot'}</div>
       <div class="life">${p.points}</div>
-      <div class="life-label">de ${RULES.pointsToWin} pts</div>
+      <div class="life-label">rodadas de ${RULES.pointsToWin}</div>
       <div class="life-bar"><i style="width:${pct}%"></i></div>
-      <div class="meta">Truques ${p.trickHand.length}<br>Deck ${p.charDeck.length}</div>
+      <div class="duel-pips" title="Duelos vencidos nesta rodada">${pips}</div>
+      <div class="life-label">duelos</div>
     </div>`;
   }
 
@@ -942,40 +961,39 @@ export class App {
 
   private renderHands() {
     const s = this.s;
-    const h = this.highlights();
     const me = s.players[ME];
+    const placing = s.phase === 'place' && s.actor === ME;
     const inDraft = new Set(this.draft ? [...this.draft.front, ...this.draft.back].filter((x): x is number => x !== null) : []);
-    const chars = me.hand.filter((c) => !inDraft.has(c.uid));
+    const cardsOf = (list: CardInst[]) =>
+      list
+        .filter((c) => !inDraft.has(c.uid))
+        .map((c) => {
+          const cls = this.sel?.kind === 'hand' && this.sel.uid === c.uid ? ['selected'] : [];
+          return cardHtml(c, { cls, attrs: `data-hand="${c.uid}" tabindex="0" role="button"` });
+        })
+        .join('');
     const handMe = this.el['hand-me'];
     handMe.classList.toggle('locked', !this.myMove());
-    const charHtml = chars
-      .map((c) => {
-        const cls: string[] = [];
-        if (this.sel?.kind === 'hand' && this.sel.uid === c.uid) cls.push('selected');
-        return cardHtml(c, { cls, attrs: `data-hand="${c.uid}" tabindex="0" role="button"` });
-      })
-      .join('');
-    const trickHtml = me.trickHand
-      .map((c) => {
-        const cls: string[] = [];
-        if (this.sel?.kind === 'trick' && this.sel.uid === c.uid) cls.push('selected');
-        if (h.hinted.has(`trick:${c.uid}`)) cls.push('hinted');
-        if (this.myMove() && s.phase === 'trick' && trickTargets(s, ME, c.defId).length) cls.push('usable');
-        return cardHtml(c, { cls, attrs: `data-trick="${c.uid}" tabindex="0" role="button"` });
-      })
-      .join('');
-    const charLabel = s.phase === 'place' && s.actor === ME ? 'Personagens para distribuir' : 'Personagens na mão';
-    handMe.innerHTML = `
-      <div class="hand-group"><div class="hand-label">${charLabel}</div><div class="hand-cards">${charHtml || '<span class="hand-empty">—</span>'}</div></div>
-      <div class="hand-group tricks"><div class="hand-label">Truques e equipamentos</div><div class="hand-cards">${trickHtml || '<span class="hand-empty">—</span>'}</div></div>`;
+    handMe.classList.toggle('compact', !placing);
+    if (placing) {
+      const need = requiredBack(me);
+      handMe.innerHTML = `
+        <div class="hand-group"><div class="hand-label">Personagens · frontline ou backline</div><div class="hand-cards">${cardsOf(me.hand) || '<span class="hand-empty">—</span>'}</div></div>
+        <div class="hand-group tricks"><div class="hand-label">Truques e equipamentos · só backline</div><div class="hand-cards">${cardsOf(me.trickHand) || '<span class="hand-empty">—</span>'}</div></div>
+        <div class="hand-need">Frontline: 5 personagens. Backline: ${need} carta(s), personagem ou truque.</div>`;
+    } else {
+      handMe.innerHTML = `<div class="hand-summary">Na sua mão: ${me.hand.length} personagem(ns) e ${me.trickHand.length} truque(s)/equipamento(s). Eles entram na próxima distribuição.</div>
+        ${me.hand.length + me.trickHand.length ? `<div class="hand-cards mini">${cardsOf([...me.hand, ...me.trickHand])}</div>` : ''}`;
+    }
     const opp = s.players[BOT];
-    this.el['hand-opp'].innerHTML = `${opp.hand.map(() => backHtml()).join('')}${opp.trickHand.map(() => backHtml('trick-back')).join('')}<span class="opp-hand-note">Bot: ${opp.hand.length} personagem(ns), ${opp.trickHand.length} truque(s) na mão</span>`;
+    this.el['hand-opp'].innerHTML = `<span class="opp-hand-note">Mão do bot: ${opp.hand.length} personagem(ns) · ${opp.trickHand.length} truque(s)/equipamento(s)</span>`;
   }
 
   private renderStrip() {
     const s = this.s;
+    const [me, bot] = s.players;
     this.el['turn-no'].textContent =
-      s.phase === 'coin' ? 'Preparação' : `Rodada ${s.round} · Turno ${Math.max(1, s.turnInRound)}/5 · Confronto ${Math.max(1, s.turnTotal)} de até ${RULES.maxTurns}`;
+      s.phase === 'coin' ? 'Preparação' : `Rodada ${s.round} de até ${RULES.maxRounds} · Duelo ${Math.max(1, s.duelInRound)} · Placar ${me.points} × ${bot.points}`;
     const who = this.el['turn-who'];
     who.classList.remove('thinking');
     if (s.phase === 'over') who.textContent = s.winner === ME ? 'Vitória' : s.winner === BOT ? 'Derrota' : 'Empate';
@@ -985,17 +1003,13 @@ export class App {
       who.classList.add('thinking');
     } else who.textContent = `${PHASE_PT[s.phase]} · sua vez`;
 
-    // linha do confronto atual
     let clash = '';
-    if (s.clash) {
+    if (s.clash && s.players[0].front[s.clash.col]?.revealed && s.players[1].front[s.clash.col]?.revealed) {
       const c = s.clash.col;
-      const f0 = s.players[ME].front[c];
-      const f1 = s.players[BOT].front[c];
-      if (f0?.revealed && f1?.revealed) {
-        const cmp = compareFronts(f0.card, f1.card);
-        if (cmp.byPrinciple) clash = `Campo ${c + 1}: vantagem de princípio para ${cmp.leader === ME ? 'você' : 'o bot'}`;
-        else clash = `Campo ${c + 1}: você ${sideTotal(s, ME, c)} × ${sideTotal(s, BOT, c)} bot`;
-      }
+      const st = duelStanding(s, c);
+      clash = st.byPrinciple
+        ? `Campo ${c + 1}: vantagem de princípio para ${st.leader === ME ? 'você' : 'o bot'}`
+        : `Campo ${c + 1}: você ${st.totals[0]} × ${st.totals[1]} bot`;
     }
     this.el['clash-line'].textContent = clash;
 
@@ -1020,14 +1034,13 @@ export class App {
         const ready = this.draft && !this.draft.front.includes(null) && validatePlace(s, { type: 'place', front: this.draft.front as number[], back: this.draft.back }) === null;
         return `${hint}<button class="btn ghost" data-act="auto">Distribuir automático</button><button class="btn ghost" data-act="clear">Limpar</button><button class="btn${hc('confirm')}" data-act="confirm" ${ready ? '' : 'disabled'}>Confirmar</button>`;
       }
-      case 'trick':
-        return `${hint}<button class="btn${hc('pass')}" data-act="pass">Passar</button>`;
       case 'choose':
         return `${hint}<span class="chip">Clique num campo livre</span>`;
       case 'flip': {
         const c = s.clash!;
         const back = s.players[ME].back[c.col]!.card;
-        return `${hint}<button class="btn${hc('flip-yes')}" data-act="flip-yes">Virar (+DEF ${getDef(back.defId).def})</button><button class="btn ghost${hc('flip-no')}" data-act="flip-no">Não virar</button>`;
+        const label = isTrick(back.defId) ? `Virar: ${getTrick(back.defId).name}` : `Virar (+DEF ${getDef(back.defId).def})`;
+        return `${hint}<button class="btn${hc('flip-yes')}" data-act="flip-yes">${label}</button><button class="btn ghost${hc('flip-no')}" data-act="flip-no">Não virar</button>`;
       }
       case 'swap':
         return `${hint}<button class="btn${hc('done')}" data-act="done">Pronto</button>`;
@@ -1039,7 +1052,7 @@ export class App {
   private findVisible(uid: number): { card: CardInst; row?: Row } | null {
     const s = this.s;
     if (this.draft) {
-      const c = s.players[ME].hand.find((x) => x.uid === uid);
+      const c = this.draftCard(uid);
       if (c) {
         const row = this.draft.front.includes(uid) ? 'front' : this.draft.back.includes(uid) ? 'back' : undefined;
         return { card: c, row };
@@ -1069,7 +1082,7 @@ export class App {
     }
     if (isTrick(found.card.defId)) {
       const t = getTrick(found.card.defId);
-      box.innerHTML = `${cardHtml(found.card, { big: true })}<div class="details"><b>${t.kind === 'truque' ? 'Truque' : 'Equipamento'}.</b> Use na fase de truques, antes do dado (1 por turno). Depois de usado, vai para o cemitério 2.</div>`;
+      box.innerHTML = `${cardHtml(found.card, { big: true })}<div class="details"><b>${t.kind === 'truque' ? 'Truque' : 'Equipamento'}.</b> Vai virado na backline durante a distribuição. Dispara quando você o vira no duelo daquele campo. No fim da rodada, vai ao cemitério 2.</div>`;
       return;
     }
     const d = getDef(found.card.defId);
@@ -1078,47 +1091,43 @@ export class App {
     box.innerHTML = `${cardHtml(found.card, { big: true, row: found.row })}
       <div class="details">
         <b>${PRINCIPLE_LABEL[d.principle]}</b> vence ${beatsList}${losesTo.length ? `; perde para ${losesTo.join(', ')}` : ''}.
-        ${d.principle === 'realeza' ? ' No fim da rodada vai para o <b>exílio</b>.' : ''}<br>
+        ${d.principle === 'realeza' ? ' Se for revelada, vai ao <b>exílio</b> no fim da rodada; oculta, vai ao cemitério.' : ''}<br>
         Na frontline disputa com ATK ${d.atk}. Na backline, se virada, soma DEF ${d.def}.
       </div>`;
   }
 
-  private renderCoach() {
+  private tipText(): string {
     const s = this.s;
+    if (s.phase === 'coin') return 'Escolha cara ou coroa para decidir a iniciativa.';
+    if (s.phase === 'over') return 'Partida encerrada. Clique em “Nova partida” para jogar de novo.';
+    if (s.actor === BOT) return 'O bot está decidindo. Acompanhe o registro abaixo.';
+    switch (s.phase) {
+      case 'place':
+        return this.sel?.kind === 'hand'
+          ? 'Agora clique numa casa vazia do seu lado. Truques só vão para a backline.'
+          : 'Clique numa carta da mão e depois numa casa. Frente: o ATK disputa o campo. Trás: personagem soma a DEF se virado; truque dispara o efeito quando virado.';
+      case 'choose':
+        return 'Você venceu no d6: clique num campo livre. As duas frontlines dele serão reveladas.';
+      case 'flip':
+        return s.clash!.stage === 'loser'
+          ? 'Você está perdendo este duelo. Virar a backline soma a DEF (personagem) ou dispara o efeito (truque). Se não virar, ela continua oculta e pode trocar de lugar depois.'
+          : 'O bot virou a backline. Você pode virar a sua para responder.';
+      case 'swap':
+        return 'Fim do duelo: clique em duas backlines ocultas suas para trocar de lugar (pode repetir). Depois clique em Pronto.';
+      default:
+        return '';
+    }
+  }
+
+  private renderCoach() {
     const rec = this.stats[this.prefs.difficulty];
-    let tip: string;
-    if (s.phase === 'coin') tip = 'Escolha cara ou coroa para decidir a iniciativa.';
-    else if (s.phase === 'over') tip = 'Partida encerrada. Clique em “Nova partida” para jogar de novo.';
-    else if (s.actor === BOT) tip = 'O bot está decidindo. Acompanhe o registro abaixo.';
-    else
-      switch (s.phase) {
-        case 'place':
-          tip = this.sel?.kind === 'hand'
-            ? 'Agora clique numa casa vazia do seu lado.'
-            : 'Clique numa carta da mão e depois numa casa. Frente: o ATK disputa o campo. Trás: a DEF soma se você virar. Clicar numa carta já posta e depois noutra casa troca as duas.';
-          break;
-        case 'trick':
-          tip = this.sel?.kind === 'trick' ? 'Clique no alvo destacado em azul.' : 'Clique num truque contornado para usar (1 por turno) ou passe.';
-          break;
-        case 'choose':
-          tip = 'Você venceu no d6: clique num campo livre. As duas frontlines dele serão reveladas.';
-          break;
-        case 'flip': {
-          const c = s.clash!;
-          tip = c.stage === 'loser'
-            ? 'Você está perdendo este campo. Virar a backline soma a DEF dela. Se não virar, ela continua oculta e pode trocar de lugar depois.'
-            : 'O bot virou a backline. Você pode virar a sua para somar a DEF.';
-          break;
-        }
-        case 'swap':
-          tip = 'Fim do turno: clique em duas backlines ocultas suas para trocar de lugar (pode repetir). Depois clique em Pronto.';
-          break;
-        default:
-          tip = '';
-      }
-    const hint = this.hint ? `<p class="hint-text"><b>Sugestão:</b> ${this.hint.text}.<br><small>${this.hint.d.reason}</small></p>` : '';
-    this.el.coach.innerHTML = `<p>${tip}</p>${hint}
-      <div class="row"><button class="btn ghost" data-act="hint" ${this.myMove() ? '' : 'disabled'}>Pedir dica ao bot</button></div>
+    const toggle = `<button class="btn ghost" data-act="tips">${this.prefs.showTips ? 'Ocultar dicas' : 'Mostrar dicas'}</button>`;
+    let body = '';
+    if (this.prefs.showTips) {
+      const hint = this.hint ? `<p class="hint-text"><b>Sugestão:</b> ${this.hint.text}.<br><small>${this.hint.d.reason}</small></p>` : '';
+      body = `<p>${this.tipText()}</p>${hint}<div class="row"><button class="btn ghost" data-act="hint" ${this.myMove() ? '' : 'disabled'}>Pedir jogada ao bot</button></div>`;
+    }
+    this.el.coach.innerHTML = `<div class="row">${toggle}</div>${body}
       <div class="stats-line">Contra o bot ${DIFFICULTY_LABEL[this.prefs.difficulty]}: ${rec.wins} V · ${rec.losses} D</div>`;
   }
 
@@ -1154,19 +1163,19 @@ function wheelSvg(): string {
     ${node(214, 140, 'qg', 70)}
     ${node(46, 140, 'infantaria', 92)}
     ${node(130, 84, 'realeza', 84)}
-    <text x="130" y="110" text-anchor="middle" class="w-note">vence todos · cai no exílio</text>
+    <text x="130" y="110" text-anchor="middle" class="w-note">vence todos · revelada, vai ao exílio</text>
     <text x="130" y="168" text-anchor="middle" class="w-note">seta = “vence”</text>
   </svg>`;
 }
 
 function rulesHtml(): string {
-  const principle = PRINCIPLE_MODE === 'dominante' ? 'Vantagem de princípio vence o campo direto.' : `Vantagem de princípio soma +${PRINCIPLE_BONUS}.`;
+  const principle = PRINCIPLE_MODE === 'dominante' ? 'Vantagem de princípio vence o duelo.' : `Vantagem de princípio soma +${PRINCIPLE_BONUS}.`;
   return `<ul class="rules-list">
-    <li>Cada rodada: 10 personagens virados (5 na frente, 5 atrás) e 5 turnos, um por campo.</li>
-    <li>Turno: truques (1 cada) → d6 → quem tirar mais escolhe o campo → as frontlines são reveladas.</li>
-    <li>${principle} Sem vantagem: ATK × ATK. Quem perde pode virar a backline (soma DEF); aí o outro pode virar a dele.</li>
-    <li>Empate: d6 até desempatar. Cada campo vencido vale 1 ponto.</li>
-    <li>Fim do turno: backlines ainda ocultas podem trocar de lugar. Fim da rodada: tudo ao cemitério.</li>
-    <li>Vence quem fizer ${RULES.pointsToWin} pontos (no máximo ${RULES.maxTurns} turnos).</li>
+    <li>Distribuição: 5 personagens virados na frontline; na backline, personagens ou truques/equipamentos, também virados.</li>
+    <li>Duelo: d6 → quem tirar mais escolhe o campo → as frontlines são reveladas. ${principle} Sem vantagem: ATK × ATK.</li>
+    <li>Quem perde pode virar a backline: personagem soma DEF, truque dispara o efeito. Se virar, o outro pode responder.</li>
+    <li>Empate: d6 até desempatar. Fim do duelo: backlines ocultas podem trocar de lugar.</li>
+    <li>Rodada: quem vencer ${RULES.duelsToWinRound} duelos leva 1 ponto. Tudo vai ao cemitério; Realeza revelada, ao exílio.</li>
+    <li>Vence quem fizer ${RULES.pointsToWin} pontos (no máximo ${RULES.maxRounds} rodadas).</li>
   </ul>`;
 }

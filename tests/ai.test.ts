@@ -9,7 +9,7 @@ describe('bot de treino', () => {
     for (const difficulty of ['facil', 'medio', 'dificil'] as const) {
       const s = newGame({ seed: 101 });
       const bot = createBot({ difficulty, seed: 5, budgetMs: 0, minRollouts: 2 });
-      for (let i = 0; i < 120 && s.phase !== 'over'; i++) {
+      for (let i = 0; i < 400 && s.phase !== 'over'; i++) {
         const d = bot.decide(s);
         expect(isLegal(s, d.action), `${difficulty} ${s.phase} ${JSON.stringify(d.action)}`).toBe(true);
         applyAction(s, d.action);
@@ -17,13 +17,12 @@ describe('bot de treino', () => {
     }
   });
 
-  it('partidas terminam com 15 pontos ou no limite de 29 turnos', () => {
+  it('partidas terminam com 15 rodadas vencidas, em no máximo 29 rodadas', () => {
     for (let seed = 1; seed <= 20; seed++) {
       const s = playMatch('medio', 'facil', seed);
       expect(s.phase).toBe('over');
-      expect(s.turnTotal).toBeLessThanOrEqual(RULES.maxTurns);
-      const best = Math.max(s.players[0].points, s.players[1].points);
-      expect(best === RULES.pointsToWin || s.turnTotal === RULES.maxTurns).toBe(true);
+      expect(s.round).toBeLessThanOrEqual(RULES.maxRounds);
+      expect(Math.max(s.players[0].points, s.players[1].points)).toBe(RULES.pointsToWin);
     }
   });
 

@@ -1,14 +1,15 @@
 import { AI, RULES, type Difficulty } from '../config';
-import { getDef, getTrick } from '../engine/cards';
+import { getDef, isTrick } from '../engine/cards';
 import {
   applyAction,
   compareFronts,
   determinize,
+  duelStanding,
   legalActions,
   openColumns,
   other,
+  requiredBack,
   swapPairs,
-  trickActions,
   type Action,
   type CardInst,
   type GameState,
@@ -57,11 +58,14 @@ function shuffled<T>(r: Rng, xs: T[]): T[] {
 
 // ─── Conhecimento público ─────────────────────────────────────────────────
 
-/** Personagens do rival que `viewer` não consegue ver (mão, deck e mesa virada). */
+/**
+ * Personagens do rival que `viewer` não consegue ver (mão, deck e mesa virada).
+ * Usa só a composição (que é pública: a lista do deck menos o que já apareceu).
+ */
 export function hiddenPool(s: GameState, viewer: PlayerId): CardInst[] {
   const o = s.players[other(viewer)];
   const out = [...o.hand, ...o.charDeck];
-  for (const row of [o.front, o.back]) for (const x of row) if (x && !x.revealed) out.push(x.card);
+  for (const row of [o.front, o.back]) for (const x of row) if (x && !x.revealed && !isTrick(x.card.defId)) out.push(x.card);
   return out;
 }
 
@@ -82,25 +86,62 @@ const def = (c: CardInst) => getDef(c.defId).def;
 
 // ─── Política média (heurística) ──────────────────────────────────────────
 
+/** Valor de uma carta oculta na backline (personagem = DEF; truque = valor estimado). */
+export function backValue(c: CardInst): number {
+  if (c.defId === 't-mapa-confuso') return 4;
+  if (c.defId === 't-vara-de-pesca') return 4.5;
+  return def(c);
+}
+
 export function heuristicPlace(s: GameState, pid: PlayerId, r: Rng, jitter = 0): Extract<Action, { type: 'place' }> {
   const p = s.players[pid];
   const pool = hiddenPool(s, pid);
   const scored = p.hand.map((c) => ({ c, f: frontWinProb(c, pool) + (jitter ? (rnd(r) - 0.5) * jitter : 0), d: def(c) / 7 }));
   scored.sort((a, b) => b.f - 0.5 * b.d - (a.f - 0.5 * a.d));
-  const fronts = scored.slice(0, RULES.columns).map((x) => x.c);
-  const rest = scored.slice(RULES.columns).sort((a, b) => b.d - a.d);
-  const nBack = Math.min(RULES.columns, p.hand.length - RULES.columns);
-  const backs: (number | null)[] = rest.slice(0, nBack).map((x) => x.c.uid);
-  while (backs.length < RULES.columns) backs.push(null);
-  return { type: 'place', front: shuffled(r, fronts).map((c) => c.uid), back: shuffled(r, backs) };
+  const fronts = shuffled(r, scored.slice(0, RULES.columns));
+  const need = requiredBack(p);
+  // truques: Mapa Confuso atrás das frentes fracas, no máximo 1 Vara de Pesca
+  const backs: (CardInst | null)[] = Array(RULES.columns).fill(null);
+  let placed = 0;
+  const order = fronts.map((x, col) => ({ col, f: x.f })).sort((a, b) => a.f - b.f);
+  const mapas = p.trickHand.filter((c) => c.defId === 't-mapa-confuso');
+  const varas = p.trickHand.filter((c) => c.defId === 't-vara-de-pesca');
+  const trickRate = jitter ? 0.35 + rnd(r) * 0.5 : 0.6;
+  for (const o of order) {
+    if (placed >= need) break;
+    if (o.f < 0.45 && mapas.length && rnd(r) < trickRate + 0.3) {
+      backs[o.col] = mapas.pop()!;
+      placed++;
+    }
+  }
+  if (varas.length && placed < need && rnd(r) < trickRate) {
+    const free = order.filter((o) => !backs[o.col]);
+    if (free.length) {
+      backs[free[Math.floor(free.length / 2)].col] = varas.pop()!;
+      placed++;
+    }
+  }
+  const restChars = scored.slice(RULES.columns).sort((a, b) => b.d - a.d).map((x) => x.c);
+  const leftoverTricks = [...mapas, ...varas];
+  for (let col = 0; col < RULES.columns && placed < need; col++) {
+    if (backs[col]) continue;
+    const c = restChars.shift() ?? leftoverTricks.shift();
+    if (c) {
+      backs[col] = c;
+      placed++;
+    }
+  }
+  return { type: 'place', front: fronts.map((x) => x.c.uid), back: backs.map((c) => (c ? c.uid : null)) };
 }
 
 export function randomPlace(s: GameState, pid: PlayerId, r: Rng): Extract<Action, { type: 'place' }> {
-  const hand = shuffled(r, s.players[pid].hand);
-  const nBack = Math.min(RULES.columns, hand.length - RULES.columns);
-  const back: (number | null)[] = hand.slice(RULES.columns, RULES.columns + nBack).map((c) => c.uid);
+  const p = s.players[pid];
+  const hand = shuffled(r, p.hand);
+  const front = hand.slice(0, RULES.columns);
+  const pool = shuffled(r, [...hand.slice(RULES.columns), ...p.trickHand]).slice(0, requiredBack(p));
+  const back: (number | null)[] = pool.map((c) => c.uid);
   while (back.length < RULES.columns) back.push(null);
-  return { type: 'place', front: hand.slice(0, RULES.columns).map((c) => c.uid), back: shuffled(r, back) };
+  return { type: 'place', front: front.map((c) => c.uid), back: shuffled(r, back) };
 }
 
 function mediumDecide(s: GameState, r: Rng): BotDecision {
@@ -112,31 +153,7 @@ function mediumDecide(s: GameState, r: Rng): BotDecision {
       return { action: { type: 'coin', call: rnd(r) < 0.5 ? 'cara' : 'coroa' }, reason: 'Moeda é sorte.' };
 
     case 'place':
-      return { action: heuristicPlace(s, me, r), reason: 'Frente: cartas com mais chance contra o que ainda pode vir do rival. Atrás: as maiores defesas.' };
-
-    case 'trick': {
-      const acts = trickActions(s, me) as Extract<Action, { type: 'trick' }>[];
-      const open = new Set(openColumns(s));
-      const vara = acts.filter((a) => getTrick(P.trickHand.find((c) => c.uid === a.uid)!.defId).id === 't-vara-de-pesca');
-      const varaOpen = vara.filter((a) => open.has(a.target.col));
-      if (varaOpen.length) return { action: pick(r, varaOpen), reason: 'Vara de Pesca numa backline de campo ainda livre: o rival perde a defesa ali e eu ganho a carta.' };
-      const mapa = acts.filter((a) => getTrick(P.trickHand.find((c) => c.uid === a.uid)!.defId).id === 't-mapa-confuso');
-      if (mapa.length) {
-        const pool = hiddenPool(s, me);
-        let best: (typeof mapa)[number] | null = null;
-        let bestF = 0.35;
-        for (const a of mapa) {
-          const f = frontWinProb(P.front[a.target.col]!.card, pool);
-          if (f < bestF) {
-            bestF = f;
-            best = a;
-          }
-        }
-        if (best) return { action: best, reason: `Mapa Confuso na frontline mais fraca (chance estimada de ${Math.round(bestF * 100)}%).` };
-      }
-      if (vara.length && rnd(r) < 0.5) return { action: pick(r, vara), reason: 'Vara de Pesca numa backline oculta que ainda pode ser trocada para um campo livre.' };
-      return { action: { type: 'pass' }, reason: 'Guardo os truques para um momento melhor.' };
-    }
+      return { action: heuristicPlace(s, me, r), reason: 'Frente: cartas com mais chance contra o que ainda pode vir do rival. Atrás: as maiores defesas e alguns truques atrás das frentes fracas.' };
 
     case 'choose': {
       const pool = hiddenPool(s, me);
@@ -144,7 +161,7 @@ function mediumDecide(s: GameState, r: Rng): BotDecision {
       let bv = -Infinity;
       for (const col of openColumns(s)) {
         const b = P.back[col];
-        const v = frontWinProb(P.front[col]!.card, pool) + (b && !b.revealed ? def(b.card) / 30 : 0);
+        const v = frontWinProb(P.front[col]!.card, pool) + (b && !b.revealed ? backValue(b.card) / 30 : 0);
         if (v > bv) {
           bv = v;
           best = col;
@@ -155,22 +172,31 @@ function mediumDecide(s: GameState, r: Rng): BotDecision {
 
     case 'flip': {
       const c = s.clash!;
-      const myBack = P.back[c.col]!.card;
-      const cmp = compareFronts(P.front[c.col]!.card, O.front[c.col]!.card);
-      const mine = cmp.values[0];
-      const theirs = cmp.values[1] + (c.flipped[other(me)] ? def(O.back[c.col]!.card) : 0);
-      const withBack = mine + def(myBack);
-      if (c.stage === 'loser') {
-        const flip = withBack > theirs || (withBack === theirs && def(myBack) <= 3);
-        return {
-          action: { type: 'flip', flip },
-          reason: flip ? `Virando, fico com ${withBack} contra ${theirs}.` : `Nem virando passo de ${theirs}; guardo a carta oculta para trocar depois.`,
-        };
+      const back = P.back[c.col]!.card;
+      const st = duelStanding(s, c.col);
+      const mine = st.totals[me];
+      const theirs = st.totals[other(me)];
+      const enemyBack = O.back[c.col];
+      const enemyBackIsChar = !!enemyBack && !isTrick(enemyBack.card.defId);
+      const winning = st.leader === me;
+      if (back.defId === 't-mapa-confuso') {
+        const flip = !winning;
+        return { action: { type: 'flip', flip }, reason: flip ? 'Viro o Mapa Confuso: troco a frontline perdedora pela do topo do deck.' : 'Já estou vencendo; guardo o Mapa Confuso oculto.' };
       }
-      const flip = theirs >= mine && withBack >= theirs;
+      if (back.defId === 't-vara-de-pesca') {
+        const flip = !!enemyBack && (enemyBack.revealed ? enemyBackIsChar : true);
+        return { action: { type: 'flip', flip }, reason: flip ? 'Viro a Vara de Pesca para roubar a backline do rival neste campo.' : 'Não há o que pescar aqui.' };
+      }
+      if (st.byPrinciple) return { action: { type: 'flip', flip: false }, reason: 'O princípio já decidiu; somar DEF não muda nada.' };
+      const withBack = mine + def(back);
+      if (c.stage === 'loser') {
+        const flip = withBack > theirs || (withBack === theirs && def(back) <= 3);
+        return { action: { type: 'flip', flip }, reason: flip ? `Virando, fico com ${withBack} contra ${theirs}.` : `Nem virando passo de ${theirs}; guardo a carta oculta para trocar depois.` };
+      }
+      const flip = !winning && withBack >= theirs;
       return {
         action: { type: 'flip', flip },
-        reason: flip ? `O rival foi a ${theirs}; virando eu chego a ${withBack}.` : theirs < mine ? `Já estou na frente (${mine} × ${theirs}).` : `Mesmo virando não alcanço ${theirs}.`,
+        reason: flip ? `O rival foi a ${theirs}; virando eu chego a ${withBack}.` : winning ? `Já estou na frente (${mine} × ${theirs}).` : `Mesmo virando não alcanço ${theirs}.`,
       };
     }
 
@@ -181,15 +207,15 @@ function mediumDecide(s: GameState, r: Rng): BotDecision {
       for (const [a, b] of swapPairs(s, me)) {
         const [o, x] = open.has(a) && !open.has(b) ? [a, b] : open.has(b) && !open.has(a) ? [b, a] : [-1, -1];
         if (o < 0) continue;
-        const vo = P.back[o] ? def(P.back[o]!.card) : 0;
-        const vx = P.back[x] ? def(P.back[x]!.card) : 0;
+        const vo = P.back[o] ? backValue(P.back[o]!.card) : 0;
+        const vx = P.back[x] ? backValue(P.back[x]!.card) : 0;
         if (vx - vo > gain) {
           gain = vx - vo;
           best = [a, b];
         }
       }
       if (best && P.swapsThisTurn < 4) {
-        return { action: { type: 'swap', a: best[0], b: best[1] }, reason: 'Levo uma defesa oculta mais forte para um campo ainda livre.' };
+        return { action: { type: 'swap', a: best[0], b: best[1] }, reason: 'Levo uma backline oculta mais útil para um campo ainda livre.' };
       }
       return { action: { type: 'done' }, reason: 'Backline arrumada.' };
     }
@@ -211,8 +237,8 @@ function easyDecide(s: GameState, r: Rng): BotDecision {
 function score(s: GameState, me: PlayerId): number {
   const P = s.players[me];
   const O = s.players[other(me)];
-  if (s.phase === 'over') return s.winner === me ? 100 : s.winner === 'empate' ? 0 : -100;
-  return P.points - O.points + 0.35 * (P.trickHand.length - O.trickHand.length) + 0.08 * (P.hand.length - O.hand.length);
+  if (s.phase === 'over') return s.winner === me ? 200 : s.winner === 'empate' ? 0 : -200;
+  return 3 * (P.points - O.points) + 0.9 * (P.duelWins - O.duelWins) + 0.3 * (P.trickHand.length - O.trickHand.length) + 0.06 * (P.hand.length - O.hand.length);
 }
 
 function rollout(s: GameState, me: PlayerId, r: Rng): number {
@@ -299,20 +325,12 @@ export type Bot = ReturnType<typeof createBot>;
 
 // ─── Textos para o modo treino ────────────────────────────────────────────
 
-export function describeAction(s: GameState, a: Action): string {
-  const P = s.players[s.actor];
+export function describeAction(_s: GameState, a: Action): string {
   switch (a.type) {
     case 'coin':
       return `Pedir ${a.call}`;
     case 'place':
       return 'Distribuir as cartas como sugerido (destacadas na mesa)';
-    case 'pass':
-      return 'Passar a fase de truques';
-    case 'trick': {
-      const t = P.trickHand.find((c) => c.uid === a.uid);
-      const name = t ? getTrick(t.defId).name : 'truque';
-      return `Usar ${name} na ${a.target.row === 'front' ? 'frontline' : 'backline'} ${a.target.side === s.actor ? 'sua' : 'do rival'}, campo ${a.target.col + 1}`;
-    }
     case 'choose':
       return `Escolher o campo ${a.col + 1}`;
     case 'flip':

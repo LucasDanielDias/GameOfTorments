@@ -18,32 +18,33 @@ npm run sim -- --a dificil --b medio --games 100 --budget 30   # bot × bot
 
 | Etapa | O que acontece |
 | --- | --- |
-| Moeda | Quem acerta cara/coroa ganha a **iniciativa** (distribui e usa truques primeiro). Depois, a iniciativa passa para quem perdeu o último campo. |
-| Rodada | Cada jogador recebe 10 personagens e os distribui **virados**: 5 na frontline e 5 na backline. Uma rodada tem 5 turnos, um por campo. |
-| 1. Truques | Cada jogador pode usar 1 truque/equipamento (ou passar). |
-| 2. Dado | Os dois rolam o d6 (empate rola de novo). Quem tirar mais escolhe um campo livre. |
-| 3. Revelação | As frontlines daquele campo são viradas. **Vantagem de princípio vence direto.** Sem vantagem (mesmo princípio), compara ATK × ATK. |
-| 4. Backline | Quem está perdendo decide se vira a backline do campo (soma a DEF). Se virar, o vencedor decide se vira a dele. |
-| 5. Ponto | Maior total leva 1 ponto. Empate: d6 até desempatar. O campo fica travado até o fim da rodada. |
-| 6. Fim do turno | Cada jogador pode trocar de lugar as cartas da backline que ainda estão ocultas. |
-| Fim da rodada | Todas as cartas da mesa vão ao cemitério 1 (Realeza vai ao exílio). |
-| Vitória | 15 pontos. No máximo 29 turnos (15 + 14). |
+| Moeda | Quem acerta cara/coroa ganha a **iniciativa**. Quem erra compra **1 truque a mais** no início. |
+| Distribuição | Cada jogador coloca cartas **viradas**: 5 personagens na frontline e 5 cartas na backline, que podem ser **personagens ou truques/equipamentos**. |
+| Duelo 1. Dado | Os dois rolam o d6 (empate rola de novo). Quem tirar mais escolhe um campo livre. |
+| Duelo 2. Revelação | As frontlines daquele campo são viradas. **Vantagem de princípio vence.** Sem vantagem (mesmo princípio), ATK × ATK. |
+| Duelo 3. Backline | Quem está perdendo decide se vira a backline do campo. Personagem soma a DEF; truque/equipamento dispara o efeito. Se virar, o outro decide se vira a dele. |
+| Duelo 4. Resultado | Maior total vence o duelo. Empate: d6 até desempatar. O campo fica travado. |
+| Duelo 5. Trocas | Cada jogador pode trocar de lugar as cartas da backline que ainda estão ocultas. |
+| Rodada | De 3 a 5 duelos: **quem vencer 3 leva a rodada e 1 ponto**. Tudo vai ao cemitério; Realeza **revelada** vai ao exílio (oculta vai ao cemitério). |
+| Vitória | 15 pontos (no máximo 29 rodadas). |
 
 Princípios: Engenharia > QG > Infantaria > Engenharia. Realeza vence todos.
 
 ### Truques e equipamentos
 
-Não têm ATK, DEF nem princípio. Ficam num deck próprio; depois de usados vão ao cemitério 2.
+Não têm ATK, DEF nem princípio. Vão virados na backline durante a distribuição e disparam quando o dono os vira no duelo
+daquele campo. No fim da rodada vão ao cemitério 2.
 
-- **Mapa Confuso** (truque): troca uma frontline oculta sua, de campo ainda livre, pela carta do topo do seu deck.
-- **Vara de Pesca** (equipamento): escolhe uma backline oculta do rival; se for personagem, você a rouba para a sua mão.
+- **Mapa Confuso** (truque): troca a sua frontline do campo pela carta do topo do seu deck.
+- **Vara de Pesca** (equipamento): se a backline inimiga do campo for um personagem, você o rouba para a sua mão.
 
 ### Decisões provisórias (ajustáveis em `src/config.ts`)
 
-- Decks de 30 personagens; quando o deck acaba, o cemitério 1 volta embaralhado.
-- Truques: 2 na mão no início, +1 por rodada, máximo 3, 1 por turno, antes do dado.
+- Decks de 30 personagens e 10 truques; quando acabam, o cemitério volta embaralhado.
+- Truques: 2 na mão no início (+1 para quem perde a moeda), +1 por rodada, máximo 4.
+- A cada distribuição a mão é completada até 10 personagens; os que sobram ficam para a próxima.
 - Frontlines empatadas no ATK: quem escolheu o campo fica "à frente" e o outro decide primeiro se vira.
-- Carta roubada pela Vara de Pesca vai para a mão e entra na próxima distribuição.
+- Vara de Pesca que encontra um truque: o truque fica revelado e sem efeito.
 
 ## Bot de treino (`src/ai`)
 
@@ -52,8 +53,8 @@ Não têm ATK, DEF nem princípio. Ficam num deck próprio; depois de usados vã
 - **Difícil**: Monte Carlo. Sorteia vários mundos possíveis para as cartas ocultas do rival, joga o resto da rodada
   com a política do Médio e escolhe a melhor média. Nunca vê as cartas viradas do oponente.
 
-No simulador: Médio vence Fácil em ~96%; Difícil vence Médio em ~60% mesmo com pouco tempo de pensamento.
-Partidas duram em média 26 turnos.
+No simulador: Médio vence Fácil em ~100%; Difícil vence Médio em ~60% mesmo com pouco tempo de pensamento.
+Partidas duram em média 25 rodadas.
 
 ## Estrutura
 
