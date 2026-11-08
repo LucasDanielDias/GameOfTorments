@@ -24,7 +24,7 @@ npm run sim -- --a dificil --b medio --games 100 --budget 30   # bot × bot
 | Duelo 1. Dado | Os dois rolam o d6 (empate rola de novo). Quem tirar mais escolhe um campo livre. |
 | Duelo 2. Revelação | As frontlines daquele campo são viradas. **Vantagem de princípio vence.** Sem vantagem (mesmo princípio), ATK × ATK. |
 | Duelo 3. Backline | Quem está perdendo decide se vira a backline do campo. Personagem soma a DEF; truque/equipamento dispara o efeito. Se virar, o outro decide se vira a dele. |
-| Duelo 3b. Troca | Quem virou um personagem pode colocá-lo **na frente** do duelo, se o princípio dele **não vencer** o da frontline rival. A frontline antiga vai para trás e soma a DEF dela. |
+| Duelo 3b. Troca | Quem virou um personagem pode colocá-lo **na frente** do duelo, **em qualquer situação**. Ele passa a disputar com a **DEF** dele, e a frontline antiga vai para trás e soma a DEF dela. Ex.: QG 3/4 na frente e Engenharia 1/10 atrás contra uma Engenharia: trocando, fica Engenharia × Engenharia e o seu lado vale 10 + 4 = 14. |
 | Duelo 4. Resultado | Maior total vence o duelo. Empate: d6 até desempatar. O campo fica travado. |
 | Duelo 5. Mover | Cada jogador decide se troca de lugar as backlines ocultas **dos campos que ainda não lutaram** (ou não move nada). Campo disputado fica travado. |
 | Rodada | De 3 a 5 duelos: **quem vencer 3 leva a rodada e 1 ponto**. Tudo vai ao cemitério; Realeza **revelada** vai ao exílio (oculta vai ao cemitério). |

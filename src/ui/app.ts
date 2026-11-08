@@ -1514,7 +1514,7 @@ export class App {
         const c = s.clash!;
         const back = getDef(s.players[ME].back[c.col]!.card.defId);
         const front = getDef(s.players[ME].front[c.col]!.card.defId);
-        return `${note(`${esc(back.name)} (ATK ${back.atk}) na frente; ${esc(front.name)} soma DEF ${front.def}`)}${hint}<button class="btn btn-secondary${hc('exchange-no')}" data-act="exchange-no">Manter</button><button class="btn btn-primary${hc('exchange-yes')}" data-act="exchange-yes">Trocar com a frontline</button>`;
+        return `${note(`${esc(back.name)} vai à frente com DEF ${back.def}; ${esc(front.name)} soma DEF ${front.def}`)}${hint}<button class="btn btn-secondary${hc('exchange-no')}" data-act="exchange-no">Manter</button><button class="btn btn-primary${hc('exchange-yes')}" data-act="exchange-yes">Trocar com a frontline</button>`;
       }
       case 'swap':
         return s.players[ME].swapsThisTurn
@@ -1594,7 +1594,7 @@ export class App {
           ? 'Você está perdendo este duelo. Virar a backline soma a DEF (personagem) ou dispara o efeito (truque). Se não virar, ela continua oculta e pode trocar de lugar depois.'
           : 'O bot virou a backline. Você pode virar a sua para responder.';
       case 'exchange':
-        return 'Você virou um personagem. Pode colocá-lo na frente deste duelo no lugar da frontline (a antiga vai para trás e soma a DEF dela). Só é permitido quando o princípio dele não vence o da frontline rival.';
+        return 'Você virou um personagem. Pode colocá-lo na frente deste duelo no lugar da frontline, em qualquer situação: ele passa a disputar com a DEF dele, e a frontline antiga vai para trás e soma a DEF dela.';
       case 'swap':
         return 'Fim do duelo: se quiser, troque de lugar backlines ocultas dos campos que ainda não lutaram. Campos já disputados ficam travados.';
       default:
@@ -1659,7 +1659,7 @@ function rulesHtml(): string {
     <li>Distribuição: 5 personagens virados na frontline; a backline é opcional (personagens ou truques, virados). O resto fica na mão.</li>
     <li>Duelo: d6 → quem tirar mais escolhe o campo → as frontlines são reveladas. ${principle} Sem vantagem: ATK × ATK.</li>
     <li>Quem perde pode virar a backline: personagem soma DEF, truque dispara o efeito. Se virar, o outro pode responder.</li>
-    <li>Personagem virado pode trocar de lugar com a frontline, se o princípio dele não vencer o da frontline rival. A antiga frontline soma a DEF.</li>
+    <li>Personagem virado pode trocar de lugar com a frontline, em qualquer situação: ele disputa com a DEF e a antiga frontline, atrás, soma a DEF dela.</li>
     <li>Empate: d6 até desempatar. Fim do duelo: você decide se troca de lugar as backlines ocultas dos campos que ainda não lutaram.</li>
     <li>Rodada: quem vencer ${RULES.duelsToWinRound} duelos leva 1 ponto. Tudo vai ao cemitério; Realeza revelada, ao exílio.</li>
     <li>Vence quem fizer ${RULES.pointsToWin} pontos (no máximo ${RULES.maxRounds} rodadas).</li>
