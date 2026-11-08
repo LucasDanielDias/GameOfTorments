@@ -2,7 +2,9 @@ import { AI, RULES, type Difficulty } from '../config';
 import { getDef, isTrick } from '../engine/cards';
 import {
   applyAction,
+  canExchange,
   canFlip,
+  cloneState,
   compareFronts,
   determinize,
   doFlip,
@@ -85,6 +87,22 @@ export function frontWinProb(card: CardInst, pool: CardInst[]): number {
 }
 
 const def = (c: CardInst) => getDef(c.defId).def;
+
+/** Aplica no estado simulado a melhor escolha entre trocar ou não backline ↔ frontline. */
+function bestExchange(w: GameState, me: PlayerId, col: number) {
+  const keep = duelStanding(w, col);
+  const alt = cloneState(w);
+  const p = alt.players[me];
+  [p.front[col], p.back[col]] = [p.back[col], p.front[col]];
+  alt.clash!.exchanged[me] = true;
+  const swapped = duelStanding(alt, col);
+  const v = (st: typeof keep) => (st.leader === me ? 2 : st.leader === null ? 1 : 0);
+  if (v(swapped) > v(keep)) {
+    const q = w.players[me];
+    [q.front[col], q.back[col]] = [q.back[col], q.front[col]];
+    w.clash!.exchanged[me] = true;
+  }
+}
 
 // ─── Política média (heurística) ──────────────────────────────────────────
 
@@ -191,6 +209,7 @@ function mediumDecide(s: GameState, r: Rng): BotDecision {
         const w = determinize(s, me, (rnd(r) * 2 ** 32) >>> 0);
         const handBefore = w.players[me].hand.length;
         doFlip(w, me, []);
+        if (canExchange(w, me)) bestExchange(w, me, c.col);
         const st = duelStanding(w, c.col);
         let v = st.leader === me ? 1 : st.leader === null ? 0.5 : 0;
         // o rival ainda pode responder se eu era o perdedor e ele tem backline oculta
@@ -207,6 +226,22 @@ function mediumDecide(s: GameState, r: Rng): BotDecision {
       return {
         action: { type: 'flip', flip },
         reason: flip ? `Virar ${what} melhora minhas chances neste duelo (+${Math.round(gain * 100)}%).` : now.byPrinciple && !isTrick(back.defId) ? 'O princípio já decidiu; somar DEF não muda nada.' : `Virar ${what} não muda o resultado; guardo oculta.`,
+      };
+    }
+
+    case 'exchange': {
+      const c = s.clash!;
+      const keep = duelStanding(s, c.col);
+      const w = cloneState(s);
+      applyAction(w, { type: 'exchange', exchange: true });
+      const swapped = duelStanding(w, c.col);
+      const score = (st: typeof keep) => (st.leader === me ? 2 : st.leader === null ? 1 : 0) + st.totals[me] / 100;
+      const exchange = score(swapped) > score(keep);
+      return {
+        action: { type: 'exchange', exchange },
+        reason: exchange
+          ? `Troco: com a backline na frente fico ${swapped.leader === me ? 'na frente' : 'empatado'} (${swapped.totals[me]} × ${swapped.totals[other(me)]}).`
+          : 'Trocar com a frontline não melhora o duelo.',
       };
     }
 
@@ -363,6 +398,8 @@ export function describeAction(_s: GameState, a: Action): string {
       return `Trocar as backlines ocultas dos campos ${a.a + 1} e ${a.b + 1}`;
     case 'done':
       return 'Não mover mais a backline';
+    case 'exchange':
+      return a.exchange ? 'Trocar a backline virada com a frontline' : 'Manter a frontline';
     case 'resolve':
       return 'Apurar o duelo';
     case 'next':

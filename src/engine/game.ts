@@ -23,6 +23,8 @@ import { rand, rollD6, shuffle } from './rng';
  *                 3) quem está perdendo decide se vira a backline do campo;
  *                    se virar, o outro decide se vira a dele.
  *                    Personagem virado soma a DEF; truque virado dispara o efeito.
+ *                    Personagem virado pode trocar de lugar com a frontline, se o
+ *                    princípio dele não vencer o da frontline rival.
  *                 4) maior total vence o duelo; empate → d6 até desempatar
  *                 5) fim do duelo: cada um decide se troca de lugar as backlines ocultas
  *                    dos campos que ainda não lutaram (campo disputado fica travado)
@@ -72,7 +74,8 @@ export interface PlayerState {
  * 'resolve'   → backlines decididas; falta apurar o duelo (a interface mostra os efeitos antes).
  * 'roundOver' → alguém fez 3 duelos; a mesa fica à mostra até alguém avançar.
  */
-export type Phase = 'coin' | 'place' | 'choose' | 'flip' | 'resolve' | 'swap' | 'roundOver' | 'over';
+/** 'exchange' → quem acabou de virar um personagem decide se ele troca de lugar com a frontline. */
+export type Phase = 'coin' | 'place' | 'choose' | 'flip' | 'exchange' | 'resolve' | 'swap' | 'roundOver' | 'over';
 
 export interface ColumnState {
   resolved: boolean;
@@ -86,6 +89,8 @@ export interface Clash {
   leader: PlayerId;
   flipped: [boolean, boolean];
   stage: 'loser' | 'winner';
+  /** quem já trocou backline ↔ frontline neste duelo */
+  exchanged: [boolean, boolean];
   /** efeitos de truques/equipamentos válidos só neste duelo */
   mods: DuelMods;
 }
@@ -132,6 +137,7 @@ export type Action =
   | { type: 'flip'; flip: boolean }
   | { type: 'swap'; a: number; b: number }
   | { type: 'done' }
+  | { type: 'exchange'; exchange: boolean }
   | { type: 'resolve' }
   | { type: 'next' };
 
@@ -149,6 +155,7 @@ export type GameEvent =
   | { kind: 'choose'; player: PlayerId; col: number }
   | { kind: 'reveal'; col: number; uids: [number, number]; leader: PlayerId; byPrinciple: boolean }
   | { kind: 'flip'; player: PlayerId; col: number; flipped: boolean; uid?: number }
+  | { kind: 'exchange'; player: PlayerId; col: number; exchanged: boolean; newFrontUid?: number; newBackUid?: number }
   | { kind: 'trigger'; player: PlayerId; col: number; defId: string; result: 'trocou' | 'roubou' | 'falhou' | 'sabotou' | 'bonus'; oldUid?: number; newUid?: number; stolenUid?: number; revealedUid?: number; destroyedUid?: number; text?: string }
   | { kind: 'result'; col: number; winner: PlayerId; totals: [number, number]; reason: DuelReason; dice: [number, number][]; duelWins: [number, number] }
   | { kind: 'swap'; player: PlayerId; a: number; b: number }
@@ -285,6 +292,7 @@ export function cloneState(s: GameState): GameState {
       ? {
           ...s.clash,
           flipped: [...s.clash.flipped] as [boolean, boolean],
+          exchanged: [...s.clash.exchanged] as [boolean, boolean],
           mods: {
             atk: [...s.clash.mods.atk] as [number, number],
             def: [...s.clash.mods.def] as [number, number],
@@ -478,7 +486,7 @@ function applyChoose(s: GameState, col: number, events: GameEvent[]) {
   const cmp = compareFronts(p0.front[col]!.card, p1.front[col]!.card);
   const leader = cmp.leader ?? chooser; // frontlines empatadas: quem escolheu o campo fica à frente
   events.push({ kind: 'reveal', col, uids: [p0.front[col]!.card.uid, p1.front[col]!.card.uid], leader, byPrinciple: cmp.byPrinciple });
-  s.clash = { col, chooser, leader, flipped: [false, false], stage: 'loser', mods: emptyMods() };
+  s.clash = { col, chooser, leader, flipped: [false, false], exchanged: [false, false], stage: 'loser', mods: emptyMods() };
   const loser = other(leader);
   if (canFlip(s, loser)) {
     s.phase = 'flip';
@@ -491,6 +499,32 @@ export function canFlip(s: GameState, pid: PlayerId): boolean {
   if (s.clash.mods.noFlip[pid]) return false;
   const b = s.players[pid].back[s.clash.col];
   return !!b && !b.revealed;
+}
+
+/**
+ * Troca backline ↔ frontline: depois de virar um PERSONAGEM da backline, o dono pode
+ * colocá-lo na frente do duelo, desde que o princípio dele NÃO vença o da frontline
+ * rival. A frontline antiga vai para a backline (virada) e passa a somar a DEF dela.
+ */
+export function canExchange(s: GameState, pid: PlayerId): boolean {
+  const c = s.clash;
+  if (!c || !c.flipped[pid] || c.exchanged[pid]) return false;
+  const back = s.players[pid].back[c.col];
+  const opFront = s.players[other(pid)].front[c.col];
+  if (!back || !back.revealed || isTrick(back.card.defId) || !opFront) return false;
+  const opP: Principle = c.mods.royal[other(pid)] ? 'realeza' : principleOf(opFront.card);
+  return !beats(principleOf(back.card), opP);
+}
+
+/** Depois que `pid` decidiu (virar e, se for o caso, trocar), passa a vez ou vai à apuração. */
+function afterFlip(s: GameState, pid: PlayerId, flipped: boolean) {
+  const c = s.clash!;
+  const next = other(pid);
+  s.phase = 'flip';
+  if (c.stage === 'loser' && flipped && canFlip(s, next)) {
+    c.stage = 'winner';
+    s.actor = next;
+  } else toResolve(s);
 }
 
 /** Fim das decisões de backline: o duelo espera a apuração ('resolve'). */
@@ -671,6 +705,8 @@ export function legalActions(s: GameState): Action[] {
       return openColumns(s).map((col) => ({ type: 'choose', col }) as Action);
     case 'flip':
       return [{ type: 'flip', flip: true }, { type: 'flip', flip: false }];
+    case 'exchange':
+      return [{ type: 'exchange', exchange: true }, { type: 'exchange', exchange: false }];
     case 'resolve':
       return [{ type: 'resolve' }];
     case 'roundOver':
@@ -756,11 +792,27 @@ export function applyAction(s: GameState, a: Action): GameEvent[] {
       } else {
         events.push({ kind: 'flip', player: pid, col: c.col, flipped: false });
       }
-      const next = other(pid);
-      if (c.stage === 'loser' && a.flip && canFlip(s, next)) {
-        c.stage = 'winner';
-        s.actor = next;
-      } else toResolve(s);
+      if (a.flip && canExchange(s, pid)) {
+        s.phase = 'exchange';
+        s.actor = pid;
+      } else afterFlip(s, pid, a.flip);
+      break;
+    }
+    case 'exchange': {
+      if (s.phase !== 'exchange' || !s.clash) throw new Error('Nada para trocar agora.');
+      const c = s.clash;
+      if (a.exchange) {
+        const p = s.players[pid];
+        const f = p.front[c.col]!;
+        const b = p.back[c.col]!;
+        p.front[c.col] = { card: b.card, revealed: true };
+        p.back[c.col] = { card: f.card, revealed: true };
+        c.exchanged[pid] = true;
+        events.push({ kind: 'exchange', player: pid, col: c.col, exchanged: true, newFrontUid: b.card.uid, newBackUid: f.card.uid });
+      } else {
+        events.push({ kind: 'exchange', player: pid, col: c.col, exchanged: false });
+      }
+      afterFlip(s, pid, true);
       break;
     }
     case 'resolve': {

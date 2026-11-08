@@ -1056,3 +1056,22 @@ button:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--ink-3)
 }
 .tiny .duel-pips i { width: 6px; height: 6px; }
 .tiny .duel-pips { gap: 2px; }
+
+/* ═══ Arrastar e soltar ═══════════════════════════════════════════════ */
+.placing .hand.me .card, .placing #side-me .card, .swapping #side-me .slot.back .card { touch-action: none; cursor: grab; }
+.drag-active, .drag-active * { cursor: grabbing !important; user-select: none; }
+.drag-ghost {
+  position: fixed !important;
+  top: 0;
+  left: 0;
+  z-index: 70 !important;
+  margin: 0 !important;
+  pointer-events: none;
+  opacity: 0.95;
+  box-shadow: 0 22px 40px -12px rgba(26, 22, 20, 0.65) !important;
+  transition: none !important;
+  animation: none !important;
+}
+.drag-src { opacity: 0.3; filter: grayscale(0.4); }
+.slot.can-drop { outline: 2px dashed var(--move); outline-offset: 2px; }
+.slot.drop-ok { outline: 3px solid var(--gold); outline-offset: 3px; background: rgba(197, 169, 115, 0.35); }

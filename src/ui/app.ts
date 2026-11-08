@@ -41,6 +41,7 @@ const PHASE_PT: Record<GameState['phase'], string> = {
   place: 'Distribuição',
   choose: 'Escolha do campo',
   flip: 'Virar a backline?',
+  exchange: 'Trocar com a frontline?',
   resolve: 'Resultado do duelo',
   swap: 'Mover a backline?',
   roundOver: 'Fim da rodada',
@@ -51,10 +52,12 @@ const PHASE_PT: Record<GameState['phase'], string> = {
 const STEPS: { label: string; phases: GameState['phase'][] }[] = [
   { label: 'Distribuição', phases: ['place'] },
   { label: 'Dado e campo', phases: ['choose'] },
-  { label: 'Backline', phases: ['flip'] },
+  { label: 'Backline', phases: ['flip', 'exchange'] },
   { label: 'Resultado', phases: ['resolve', 'roundOver'] },
   { label: 'Mover', phases: ['swap'] },
 ];
+
+type DragSrc = { kind: 'hand'; uid: number } | { kind: 'draft'; row: Row; col: number } | { kind: 'back'; col: number };
 
 type Sel = { kind: 'hand'; uid: number } | { kind: 'draft'; row: Row; col: number } | { kind: 'swap'; col: number } | null;
 type PileKind = 'deck' | 'tricks' | 'grave' | 'graveTricks' | 'exile';
@@ -86,6 +89,8 @@ export class App {
   private recorded = false;
   private el: Record<string, HTMLElement> = {};
   private vt: { skipTransition?: () => void } | null = null;
+  private drag: { src: DragSrc; el: HTMLElement; x0: number; y0: number; ghost: HTMLElement | null; target: HTMLElement | null; w: number; h: number } | null = null;
+  private suppressClick = false;
 
   constructor(private root: HTMLElement) {
     sound.muted = this.prefs.muted;
@@ -166,12 +171,27 @@ export class App {
   private bind() {
     const r = this.root;
     r.addEventListener('pointerdown', () => sound.unlock());
+    // arrastar e soltar (mouse e toque); o clique continua funcionando
+    r.addEventListener('pointerdown', (e) => this.onDragStart(e));
+    window.addEventListener('pointermove', (e) => this.onDragMove(e));
+    window.addEventListener('pointerup', (e) => this.onDragEnd(e));
+    window.addEventListener('pointercancel', () => this.endDrag());
+    r.addEventListener(
+      'click',
+      (e) => {
+        if (!this.suppressClick) return;
+        this.suppressClick = false;
+        e.stopPropagation();
+        e.preventDefault();
+      },
+      true,
+    );
     r.addEventListener('click', (e) => this.onClick(e));
     // janela flutuante com a carta sob o mouse
     r.addEventListener('mouseover', (e) => {
       if (!matchMedia('(hover: hover)').matches) return;
       const c = (e.target as HTMLElement).closest<HTMLElement>('[data-uid]');
-      if (this.el['stage-root'].firstElementChild || this.el['overlay-root'].firstElementChild) return this.hidePeek();
+      if (this.drag?.ghost || this.el['stage-root'].firstElementChild || this.el['overlay-root'].firstElementChild) return this.hidePeek();
       if (!c || c.closest('.peek, .overlay, .stage')) return this.hidePeek();
       const uid = Number(c.dataset.uid);
       this.showPeek(uid, e.clientX, e.clientY);
@@ -287,6 +307,7 @@ export class App {
       this.render();
       return;
     }
+    this.renderStrip(); // a faixa já mostra a próxima etapa enquanto as animações rodam
     await this.animate(events);
     if (id !== this.matchId) return;
     this.logEvents(events);
@@ -469,6 +490,10 @@ export class App {
         return void this.act({ type: 'flip', flip: true });
       case 'flip-no':
         return void this.act({ type: 'flip', flip: false });
+      case 'exchange-yes':
+        return void this.act({ type: 'exchange', exchange: true });
+      case 'exchange-no':
+        return void this.act({ type: 'exchange', exchange: false });
       case 'done':
         return void this.act({ type: 'done' });
     }
@@ -545,6 +570,141 @@ export class App {
     this.render();
   }
 
+  // ─── Arrastar e soltar ─────────────────────────────────────────────────
+
+  private onDragStart(e: PointerEvent) {
+    if (!this.myMove() || e.button !== 0) return;
+    const t = e.target as HTMLElement;
+    let src: DragSrc | null = null;
+    let el: HTMLElement | null = null;
+    if (this.s.phase === 'place' && this.draft) {
+      const h = t.closest<HTMLElement>('[data-hand]');
+      const slot = t.closest<HTMLElement>('[data-slot]');
+      if (h) {
+        src = { kind: 'hand', uid: Number(h.dataset.hand) };
+        el = h;
+      } else if (slot) {
+        const [pid, row, col] = slot.dataset.slot!.split(':');
+        if (Number(pid) === ME && this.draft[row as Row][Number(col)] !== null) {
+          src = { kind: 'draft', row: row as Row, col: Number(col) };
+          el = slot.querySelector<HTMLElement>('.card');
+        }
+      }
+    } else if (this.s.phase === 'swap') {
+      const slot = t.closest<HTMLElement>('[data-slot]');
+      if (slot) {
+        const [pid, row, col] = slot.dataset.slot!.split(':');
+        const c = Number(col);
+        if (Number(pid) === ME && row === 'back' && this.s.players[ME].back[c] && swapPairs(this.s, ME).some(([a, b]) => a === c || b === c)) {
+          src = { kind: 'back', col: c };
+          el = slot.querySelector<HTMLElement>('.card');
+        }
+      }
+    }
+    if (!src || !el) return;
+    const r = el.getBoundingClientRect();
+    this.drag = { src, el, x0: e.clientX, y0: e.clientY, ghost: null, target: null, w: r.width, h: r.height };
+  }
+
+  private onDragMove(e: PointerEvent) {
+    const d = this.drag;
+    if (!d) return;
+    if (!d.ghost) {
+      if (Math.hypot(e.clientX - d.x0, e.clientY - d.y0) < 6) return;
+      const g = d.el.cloneNode(true) as HTMLElement;
+      g.removeAttribute('data-uid');
+      g.removeAttribute('data-hand');
+      g.style.removeProperty('view-transition-name');
+      g.classList.remove('selected', 'hinted');
+      g.classList.add('drag-ghost');
+      g.style.width = `${d.w}px`;
+      g.style.height = `${d.h}px`;
+      this.el['app-root'].appendChild(g);
+      d.ghost = g;
+      d.el.classList.add('drag-src');
+      this.hidePeek();
+      this.sel = null;
+      this.el['app-root'].classList.add('drag-active');
+      // marca as casas onde dá para soltar
+      this.root.querySelectorAll<HTMLElement>('#side-me [data-slot]').forEach((slot) => {
+        if (this.dropValid(d.src, slot)) slot.classList.add('can-drop');
+      });
+    }
+    d.ghost!.style.transform = `translate(${e.clientX - d.w / 2}px, ${e.clientY - d.h * 0.6}px) rotate(3deg) scale(1.04)`;
+    const under = document.elementFromPoint(e.clientX, e.clientY)?.closest<HTMLElement>('[data-slot]') ?? null;
+    const target = under && this.dropValid(d.src, under) ? under : null;
+    if (target !== d.target) {
+      d.target?.classList.remove('drop-ok');
+      target?.classList.add('drop-ok');
+      d.target = target;
+    }
+    e.preventDefault();
+  }
+
+  private onDragEnd(e: PointerEvent) {
+    const d = this.drag;
+    if (!d) return;
+    if (d.ghost) {
+      this.suppressClick = true;
+      setTimeout(() => (this.suppressClick = false), 0);
+      const target = d.target;
+      this.endDrag();
+      if (target) this.dropOn(d.src, target);
+      else this.render();
+      e.preventDefault();
+    } else this.drag = null;
+  }
+
+  private endDrag() {
+    const d = this.drag;
+    this.drag = null;
+    if (!d) return;
+    d.ghost?.remove();
+    d.el.classList.remove('drag-src');
+    this.el['app-root'].classList.remove('drag-active');
+    this.root.querySelectorAll('.can-drop, .drop-ok').forEach((x) => x.classList.remove('can-drop', 'drop-ok'));
+  }
+
+  private dropValid(src: DragSrc, slot: HTMLElement): boolean {
+    const [pidS, rowS, colS] = slot.dataset.slot!.split(':');
+    const pid = Number(pidS);
+    const row = rowS as Row;
+    const col = Number(colS);
+    if (pid !== ME || !this.myMove()) return false;
+    if (src.kind === 'back') {
+      return row === 'back' && col !== src.col && swapPairs(this.s, ME).some(([a, b]) => (a === src.col && b === col) || (b === src.col && a === col));
+    }
+    if (!this.draft) return false;
+    const here = this.draft[row][col];
+    if (src.kind === 'hand') return !(row === 'front' && this.isTrickUid(src.uid));
+    if (src.row === row && src.col === col) return false;
+    const moving = this.draft[src.row][src.col];
+    if (row === 'front' && moving !== null && this.isTrickUid(moving)) return false;
+    if (src.row === 'front' && here !== null && this.isTrickUid(here)) return false;
+    return true;
+  }
+
+  private dropOn(src: DragSrc, slot: HTMLElement) {
+    const [, rowS, colS] = slot.dataset.slot!.split(':');
+    const row = rowS as Row;
+    const col = Number(colS);
+    if (src.kind === 'back') {
+      void this.act({ type: 'swap', a: Math.min(src.col, col), b: Math.max(src.col, col) });
+      return;
+    }
+    if (!this.draft) return;
+    if (src.kind === 'hand') {
+      this.draft[row][col] = src.uid; // se havia carta ali, ela volta para a mão
+    } else {
+      const moving = this.draft[src.row][src.col];
+      this.draft[src.row][src.col] = this.draft[row][col];
+      this.draft[row][col] = moving;
+    }
+    this.inspectUid = this.draft[row][col];
+    sound.play('card');
+    this.renderSmooth();
+  }
+
   // ─── Janela flutuante da carta ─────────────────────────────────────────
 
   private peekUid: number | null = null;
@@ -613,6 +773,16 @@ export class App {
           } else {
             this.toast(`${ev.player === ME ? 'Você não virou' : 'O bot não virou'} a backline.`);
             await wait(500);
+          }
+          break;
+        case 'exchange':
+          if (ev.exchanged) {
+            if (ev.newFrontUid) this.fx.set(ev.newFrontUid, 'enter');
+            if (ev.newBackUid) this.fx.set(ev.newBackUid, 'enter');
+            sound.play('move');
+            this.renderSmooth();
+            this.toast(`${ev.player === ME ? 'Você trocou' : 'O bot trocou'} a backline com a frontline.`);
+            await wait(800);
           }
           break;
         case 'trigger':
@@ -987,6 +1157,10 @@ export class App {
           this.pushLog(cls(ev.player), `${who(ev.player)} virou a backline: ${what}.`);
           break;
         }
+        case 'exchange':
+          if (ev.exchanged) this.pushLog(cls(ev.player), `${who(ev.player)} trocou: ${nm(ev.newFrontUid)} foi para a frente e ${nm(ev.newBackUid)} para trás.`);
+          else this.pushLog(cls(ev.player), `${who(ev.player)} manteve a frontline.`);
+          break;
         case 'trigger': {
           const name = getTrick(ev.defId).name;
           const res =
@@ -1042,6 +1216,7 @@ export class App {
     if (!this.s) return;
     const app = this.el['app-root'];
     app.classList.toggle('placing', this.s.phase === 'place' && this.s.actor === ME);
+    app.classList.toggle('swapping', this.s.phase === 'swap' && this.s.actor === ME);
     app.classList.toggle('show-panel', this.prefs.showPanel);
     this.el['panel-btn'].textContent = this.prefs.showPanel ? 'Ocultar painel' : 'Painel';
     this.el['panel-btn'].setAttribute('aria-pressed', String(this.prefs.showPanel));
@@ -1086,6 +1261,7 @@ export class App {
         h.hinted.add(`${ME}:back:${a.b}`);
       }
       if (a.type === 'flip') h.hinted.add(a.flip ? 'act:flip-yes' : 'act:flip-no');
+      if (a.type === 'exchange') h.hinted.add(a.exchange ? 'act:exchange-yes' : 'act:exchange-no');
       if (a.type === 'done') h.hinted.add('act:done');
       if (a.type === 'place') h.hinted.add('act:confirm');
     }
@@ -1100,7 +1276,7 @@ export class App {
   private renderSides() {
     const s = this.s;
     const h = this.highlights();
-    const clashCol = s.clash && (s.phase === 'flip' || s.phase === 'resolve' || s.phase === 'swap' || this.busy) ? s.clash.col : -1;
+    const clashCol = s.clash && (s.phase === 'flip' || s.phase === 'exchange' || s.phase === 'resolve' || s.phase === 'swap' || this.busy) ? s.clash.col : -1;
     for (const pid of [ME, BOT] as PlayerId[]) {
       const p = s.players[pid];
       const mine = pid === ME;
@@ -1300,10 +1476,16 @@ export class App {
         const label = isTrick(back.defId) ? `Virar ${getTrick(back.defId).name}` : `Virar (+DEF ${getDef(back.defId).def})`;
         return `${hint}<button class="btn btn-secondary${hc('flip-no')}" data-act="flip-no">Não virar</button><button class="btn btn-primary${hc('flip-yes')}" data-act="flip-yes">${label}</button>`;
       }
+      case 'exchange': {
+        const c = s.clash!;
+        const back = getDef(s.players[ME].back[c.col]!.card.defId);
+        const front = getDef(s.players[ME].front[c.col]!.card.defId);
+        return `${note(`${esc(back.name)} (ATK ${back.atk}) na frente; ${esc(front.name)} soma DEF ${front.def}`)}${hint}<button class="btn btn-secondary${hc('exchange-no')}" data-act="exchange-no">Manter</button><button class="btn btn-primary${hc('exchange-yes')}" data-act="exchange-yes">Trocar com a frontline</button>`;
+      }
       case 'swap':
         return s.players[ME].swapsThisTurn
           ? `${note('Clique em duas casas para trocar de novo')}${hint}<button class="btn btn-primary${hc('done')}" data-act="done">Pronto</button>`
-          : `${note('Para mover, clique em duas casas')}${hint}<button class="btn btn-primary${hc('done')}" data-act="done">Não mover</button>`;
+          : `${note('Para mover, arraste uma backline ou clique em duas casas')}${hint}<button class="btn btn-primary${hc('done')}" data-act="done">Não mover</button>`;
       default:
         return '';
     }
@@ -1368,13 +1550,15 @@ export class App {
       case 'place':
         return this.sel?.kind === 'hand'
           ? 'Agora clique numa casa vazia do seu lado. Truques só vão para a backline.'
-          : 'Clique numa carta da mão e depois numa casa. Frente: o ATK disputa o campo. Trás: personagem soma a DEF se virado; truque dispara o efeito quando virado.';
+          : 'Arraste as cartas da mão para as casas (ou clique na carta e depois na casa). Frente: o ATK disputa o campo. Trás: personagem soma a DEF se virado; truque dispara o efeito quando virado.';
       case 'choose':
         return 'Você venceu no d6: clique num campo livre. As duas frontlines dele serão reveladas.';
       case 'flip':
         return s.clash!.stage === 'loser'
           ? 'Você está perdendo este duelo. Virar a backline soma a DEF (personagem) ou dispara o efeito (truque). Se não virar, ela continua oculta e pode trocar de lugar depois.'
           : 'O bot virou a backline. Você pode virar a sua para responder.';
+      case 'exchange':
+        return 'Você virou um personagem. Pode colocá-lo na frente deste duelo no lugar da frontline (a antiga vai para trás e soma a DEF dela). Só é permitido quando o princípio dele não vence o da frontline rival.';
       case 'swap':
         return 'Fim do duelo: se quiser, troque de lugar backlines ocultas dos campos que ainda não lutaram. Campos já disputados ficam travados.';
       default:
@@ -1439,6 +1623,7 @@ function rulesHtml(): string {
     <li>Distribuição: 5 personagens virados na frontline; a backline é opcional (personagens ou truques, virados). O resto fica na mão.</li>
     <li>Duelo: d6 → quem tirar mais escolhe o campo → as frontlines são reveladas. ${principle} Sem vantagem: ATK × ATK.</li>
     <li>Quem perde pode virar a backline: personagem soma DEF, truque dispara o efeito. Se virar, o outro pode responder.</li>
+    <li>Personagem virado pode trocar de lugar com a frontline, se o princípio dele não vencer o da frontline rival. A antiga frontline soma a DEF.</li>
     <li>Empate: d6 até desempatar. Fim do duelo: você decide se troca de lugar as backlines ocultas dos campos que ainda não lutaram.</li>
     <li>Rodada: quem vencer ${RULES.duelsToWinRound} duelos leva 1 ponto. Tudo vai ao cemitério; Realeza revelada, ao exílio.</li>
     <li>Vence quem fizer ${RULES.pointsToWin} pontos (no máximo ${RULES.maxRounds} rodadas).</li>

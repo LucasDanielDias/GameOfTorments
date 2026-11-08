@@ -38,6 +38,12 @@ function setColumn(s: GameState, col: number, f0: string, f1: string, b0?: strin
   s.players[1].back[col] = b1 ? { card: mk(s, b1), revealed: false } : null;
 }
 
+/** Vira a backline e, se aparecer a troca com a frontline, mantém a frontline. */
+function flipKeep(s: GameState) {
+  applyAction(s, { type: 'flip', flip: true });
+  if (s.phase === 'exchange') applyAction(s, { type: 'exchange', exchange: false });
+}
+
 /** Apura o duelo pendente (a interface faz isso depois de mostrar os efeitos). */
 function settle(s: GameState) {
   if (s.phase === 'resolve') applyAction(s, { type: 'resolve' });
@@ -110,7 +116,7 @@ describe('duelo', () => {
     applyAction(s, { type: 'choose', col: 0 });
     expect(s.phase).toBe('flip');
     expect(s.actor).toBe(1);
-    applyAction(s, { type: 'flip', flip: true });
+    flipKeep(s);
     applyAction(s, { type: 'flip', flip: false });
     expect(s.phase).toBe('resolve'); // a interface mostra tudo antes de apurar
     settle(s);
@@ -123,9 +129,9 @@ describe('duelo', () => {
     setColumn(s, 1, 'i-escudeiro', 'i-batedora', 'q-intendente', 'i-arqueiro'); // 2 × 5; DEF 7 e 4
     applyAction(s, { type: 'choose', col: 1 });
     expect(s.actor).toBe(0);
-    applyAction(s, { type: 'flip', flip: true }); // 9 × 5
+    flipKeep(s); // 9 × 5
     expect(s.actor).toBe(1);
-    applyAction(s, { type: 'flip', flip: true }); // 9 × 9 → d6
+    flipKeep(s); // 9 × 9 → d6
     settle(s);
     expect(s.columns[1].resolved).toBe(true);
   });
@@ -135,7 +141,7 @@ describe('duelo', () => {
     setColumn(s, 2, 'i-escudeiro', 'i-batedora', 't-mapa-confuso', 'i-arqueiro');
     const top = s.players[0].charDeck[s.players[0].charDeck.length - 1];
     applyAction(s, { type: 'choose', col: 2 });
-    applyAction(s, { type: 'flip', flip: true });
+    flipKeep(s);
     expect(s.players[0].front[2]!.card.uid).toBe(top.uid);
     expect(s.players[0].front[2]!.revealed).toBe(true);
   });
@@ -146,9 +152,9 @@ describe('duelo', () => {
     const stolen = s.players[1].back[3]!.card.uid;
     applyAction(s, { type: 'choose', col: 3 });
     expect(s.actor).toBe(1);
-    applyAction(s, { type: 'flip', flip: true }); // rival vira Intendente: 2 + 7 = 9 × 5
+    flipKeep(s); // rival vira Intendente: 2 + 7 = 9 × 5
     expect(s.actor).toBe(0);
-    applyAction(s, { type: 'flip', flip: true }); // Vara rouba o Intendente
+    flipKeep(s); // Vara rouba o Intendente
     expect(s.players[1].back[3]).toBeNull();
     expect(s.players[0].hand.map((c) => c.uid)).toContain(stolen);
     settle(s);
@@ -172,7 +178,7 @@ describe('rodada', () => {
     for (let col = 0; col < 5; col++) setColumn(s, col, 'e-sapador', 'q-intendente', 'r-herdeiro', 'r-regente');
     const hiddenRoyal = s.players[1].back[4]!.card.uid;
     applyAction(s, { type: 'choose', col: 0 });
-    applyAction(s, { type: 'flip', flip: true }); // bot vira Realeza da backline do campo 1
+    flipKeep(s); // bot vira Realeza da backline do campo 1
     applyAction(s, { type: 'flip', flip: false });
     settle(s);
     for (let guard = 0; s.round === 1 && guard < 50; guard++) quickDuel(s);
@@ -220,22 +226,22 @@ describe('truques novos', () => {
 
   it('Contra-ordem inverte a vantagem de princípio', () => {
     const s = duelWith(30, 'q-capitao', 'e-sapador', 't-contra-ordem'); // Engenharia > QG
-    applyAction(s, { type: 'flip', flip: true });
+    flipKeep(s);
     settle(s);
     expect(s.columns[2].winner).toBe(0);
   });
 
   it('Coroa Falsa faz a frontline contar como Realeza', () => {
     const s = duelWith(31, 'i-escudeiro', 'q-capitao', 't-coroa-falsa'); // QG > Infantaria
-    applyAction(s, { type: 'flip', flip: true });
+    flipKeep(s);
     settle(s);
     expect(s.columns[2].winner).toBe(0);
   });
 
   it('Escudo de Torre soma 4 e Lança de Cerco soma 3', () => {
     const s = duelWith(32, 'i-escudeiro', 'i-lanceiro', 't-escudo-de-torre', 't-lanca-de-cerco'); // 2 × 4
-    applyAction(s, { type: 'flip', flip: true }); // 6 × 4
-    applyAction(s, { type: 'flip', flip: true }); // 6 × 7
+    flipKeep(s); // 6 × 4
+    flipKeep(s); // 6 × 7
     settle(s);
     expect(s.columns[2].winner).toBe(1);
   });
@@ -243,14 +249,14 @@ describe('truques novos', () => {
   it('Sabotagem manda a backline inimiga ao cemitério', () => {
     const s = duelWith(33, 'i-escudeiro', 'i-lanceiro', 't-sabotagem', 'q-intendente');
     const target = s.players[1].back[2]!.card.uid;
-    applyAction(s, { type: 'flip', flip: true });
+    flipKeep(s);
     expect(s.players[1].back[2]).toBeNull();
     expect(s.players[1].graveChars.map((c) => c.uid)).toContain(target);
   });
 
   it('Tambor de Guerra impede o rival de virar', () => {
     const s = duelWith(34, 'i-escudeiro', 'i-lanceiro', 't-tambor-de-guerra', 'q-intendente'); // 2+2 × 4
-    applyAction(s, { type: 'flip', flip: true });
+    flipKeep(s);
     expect(s.phase).toBe('resolve');
     settle(s);
     expect(s.players[1].back[2]!.revealed).toBe(false);
@@ -294,3 +300,34 @@ describe('regras de distribuição e compra', () => {
     }
   });
 });
+
+describe('troca backline ↔ frontline', () => {
+  it('personagem virado pode ir para a frente se o princípio dele não vencer o do rival', () => {
+    const s = placed(40);
+    // eu: Escudeiro (Inf, ATK 2) na frente, Berserker (Inf, ATK 6) atrás; rival: Lanceiro (Inf, ATK 4)
+    setColumn(s, 1, 'i-escudeiro', 'i-lanceiro', 'i-berserker');
+    applyAction(s, { type: 'choose', col: 1 });
+    expect(s.actor).toBe(0);
+    applyAction(s, { type: 'flip', flip: true });
+    expect(s.phase).toBe('exchange');
+    applyAction(s, { type: 'exchange', exchange: true });
+    expect(getDefName(s.players[0].front[1]!.card)).toBe('i-berserker');
+    expect(getDefName(s.players[0].back[1]!.card)).toBe('i-escudeiro');
+    settle(s);
+    // Berserker ATK 6 + DEF do Escudeiro 6 = 12 × 4
+    expect(s.columns[1].winner).toBe(0);
+  });
+
+  it('não pode trocar se o princípio da backline vencer a frontline rival', () => {
+    const s = placed(41);
+    // rival: Escudeiro (Infantaria); minha backline: Capitão (QG) vence Infantaria → sem troca
+    setColumn(s, 2, 'i-batedora', 'i-berserker', 'q-capitao');
+    applyAction(s, { type: 'choose', col: 2 });
+    applyAction(s, { type: 'flip', flip: true });
+    expect(s.phase).not.toBe('exchange');
+  });
+});
+
+function getDefName(c: CardInst) {
+  return c.defId;
+}

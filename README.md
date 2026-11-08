@@ -24,6 +24,7 @@ npm run sim -- --a dificil --b medio --games 100 --budget 30   # bot × bot
 | Duelo 1. Dado | Os dois rolam o d6 (empate rola de novo). Quem tirar mais escolhe um campo livre. |
 | Duelo 2. Revelação | As frontlines daquele campo são viradas. **Vantagem de princípio vence.** Sem vantagem (mesmo princípio), ATK × ATK. |
 | Duelo 3. Backline | Quem está perdendo decide se vira a backline do campo. Personagem soma a DEF; truque/equipamento dispara o efeito. Se virar, o outro decide se vira a dele. |
+| Duelo 3b. Troca | Quem virou um personagem pode colocá-lo **na frente** do duelo, se o princípio dele **não vencer** o da frontline rival. A frontline antiga vai para trás e soma a DEF dela. |
 | Duelo 4. Resultado | Maior total vence o duelo. Empate: d6 até desempatar. O campo fica travado. |
 | Duelo 5. Mover | Cada jogador decide se troca de lugar as backlines ocultas **dos campos que ainda não lutaram** (ou não move nada). Campo disputado fica travado. |
 | Rodada | De 3 a 5 duelos: **quem vencer 3 leva a rodada e 1 ponto**. Tudo vai ao cemitério; Realeza **revelada** vai ao exílio (oculta vai ao cemitério). |
@@ -62,6 +63,7 @@ Deck provisório de truques: 14 cartas (2 de cada, 1 Contra-ordem e 1 Coroa Fals
 - A partida mostra cada passo e **espera terminar** antes de seguir: efeito de truque, placa de madeira com o
   placar de duelos ao fim de cada duelo e tela de fim de rodada com botão "Próxima rodada".
 - Marcador de etapas na faixa central (Distribuição → Dado e campo → Backline → Resultado → Mover).
+- **Arraste** as cartas da mão para as casas na distribuição e arraste backlines para movê-las (o clique também funciona).
 - Passe o mouse sobre uma carta para vê-la numa janela com o que ela faz. No celular, toque na carta.
 - O painel lateral (regras, dicas, registro) fica oculto até você clicar em "Painel".
 
